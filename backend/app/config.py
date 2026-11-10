@@ -65,7 +65,12 @@ class Settings:
     max_wallet_balance_inr: Decimal = Decimal("10000")
 
     # --- storage / runtime ---
+    # Postgres connection string (production, e.g. Neon). When set it wins over database_path.
+    database_url: str = ""
+    # SQLite file used when database_url is empty (local dev and tests).
     database_path: Path = Path("data/campus_ai.db")
+    # Max Postgres connections this process opens (ignored for SQLite).
+    db_pool_size: int = 10
     dev_mode: bool = True
     payment_provider: str = "mock"
     public_base_url: str = "http://localhost:8000"
@@ -89,7 +94,7 @@ class Settings:
     model_pins: dict[str, str] = field(default_factory=dict)
 
     # --- per-message limits / estimates ---
-    max_output_tokens: int = 1500
+    max_output_tokens: int = 5000
     min_output_tokens: int = 256
     max_input_tokens: int = 32000
     max_message_chars: int = 8000
@@ -131,7 +136,9 @@ class Settings:
             min_topup_inr=_dec("MIN_TOPUP_INR", "20"),
             max_topup_inr=_dec("MAX_TOPUP_INR", "2000"),
             max_wallet_balance_inr=_dec("MAX_WALLET_BALANCE_INR", "10000"),
+            database_url=_env("DATABASE_URL", ""),
             database_path=Path(_env("DATABASE_PATH", "data/campus_ai.db")),
+            db_pool_size=_int("DB_POOL_SIZE", 10),
             dev_mode=_bool("DEV_MODE", True),
             payment_provider=_env("PAYMENT_PROVIDER", "mock").lower(),
             public_base_url=_env("PUBLIC_BASE_URL", cls.public_base_url).rstrip("/"),
@@ -144,7 +151,7 @@ class Settings:
             expert_max_usd_per_m=_dec("EXPERT_MAX_USD_PER_M", "25"),
             trusted_providers=tuple(p.strip().lower() for p in trusted.split(",") if p.strip()),
             model_pins={t: _env(f"MODEL_{t.upper()}", "") for t in TIERS if _env(f"MODEL_{t.upper()}", "")},
-            max_output_tokens=_int("MAX_OUTPUT_TOKENS", 1500),
+            max_output_tokens=_int("MAX_OUTPUT_TOKENS", 5000),
             min_output_tokens=_int("MIN_OUTPUT_TOKENS", 256),
             max_input_tokens=_int("MAX_INPUT_TOKENS", 32000),
             max_message_chars=_int("MAX_MESSAGE_CHARS", 8000),
@@ -159,6 +166,11 @@ class Settings:
             if raw:
                 s.reasoning_effort[t] = tuple(e.strip().lower() for e in raw.split(",") if e.strip())
         s.validate()
+        if os.environ.get("RENDER") and not s.database_url:
+            # Render sets RENDER=true. Its free-tier disk is wiped on every deploy/restart, so a SQLite
+            # file there would silently lose every wallet balance.
+            raise ConfigError("Running on Render without DATABASE_URL: wallets would be stored on an ephemeral "
+                              "disk and lost on restart. Set DATABASE_URL to your Neon connection string.")
         return s
 
     def validate(self) -> None:
@@ -174,6 +186,10 @@ class Settings:
             raise ConfigError("MIN_OUTPUT_TOKENS must be > 0 and <= MAX_OUTPUT_TOKENS")
         if self.anthropic_cache_ttl not in ("5m", "1h"):
             raise ConfigError("ANTHROPIC_CACHE_TTL must be 5m or 1h")
+        if self.database_url and not self.database_url.startswith(("postgresql://", "postgres://")):
+            raise ConfigError("DATABASE_URL must be a postgresql:// connection string")
+        if self.db_pool_size < 1:
+            raise ConfigError("DB_POOL_SIZE must be >= 1")
         if self.payment_provider not in ("mock", "razorpay"):
             raise ConfigError("PAYMENT_PROVIDER must be mock or razorpay")
         if self.payment_provider == "mock" and not self.dev_mode:

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug only: the dev backend runs over plain HTTP (http://10.0.2.2:8000 from the emulator,
+     or a LAN IP for a physical phone), so cleartext is allowed in debug builds. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors><certificates src="system" /></trust-anchors>
+    </base-config>
+</network-security-config>

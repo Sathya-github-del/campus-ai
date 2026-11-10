@@ -5,7 +5,7 @@ Students top up a closed-loop rupee wallet (UPI, from ₹20) and pay per message
 Expert tier. Models are reached through OpenRouter. Product research and economics: `../BLUEPRINT.md`.
 Known gaps and launch blockers: [`NOTES.md`](NOTES.md).
 
-Python 3.11+ · FastAPI · SQLite · httpx
+Python 3.11+ · FastAPI · Postgres (production, via `DATABASE_URL`) or SQLite (local dev default) · httpx
 
 ## Run it
 
@@ -20,14 +20,95 @@ HOST=0.0.0.0 ./run.sh         # reachable from a phone on the same Wi-Fi
 For the Android emulator set `PUBLIC_BASE_URL=http://10.0.2.2:8000` in `.env` so `checkout_url` opens
 from inside the emulator. Health check: `GET /healthz`.
 
+### Database: SQLite locally, Postgres in production
+
+- **`DATABASE_URL` unset (local default):** a SQLite file at `DATABASE_PATH` (`data/campus_ai.db`).
+  Nothing to install or run.
+- **`DATABASE_URL` set:** Postgres, e.g. Neon. Format
+  `postgresql://USER:PASSWORD@HOST/DBNAME?sslmode=require` (Neon needs `sslmode=require`). Tables are
+  created on startup; there is no separate migration step. This is the production path, and the server
+  refuses to start on Render without it.
+
+The same code runs on both (`app/db.py`). Money-moving transactions lock the user's wallet row
+(`SELECT … FOR UPDATE` on Postgres; SQLite's `BEGIN IMMEDIATE` already locks the whole database), so
+parallel requests can't double-spend or lose an update on either backend. `PostgresDB.tx()` in
+`app/db.py` explains the choice. If your `.venv` predates Postgres support, run
+`.venv/bin/pip install -r requirements.txt` once (only needed if you set `DATABASE_URL`).
+
 ### Tests
 
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q
+.venv/bin/python -m pytest -q                # default: SQLite only, a few seconds, no setup
+.venv/bin/python -m pytest -q -m postgres    # the same money-path tests on a real Postgres (needs Docker)
+.venv/bin/python -m pytest -q -m ""          # both
 ```
 
 The tests use a fake OpenRouter (no network, no key needed) and a real SQLite file per test.
+
+`-m postgres` starts a throwaway `postgres:16-alpine` container (`TEST_PG_IMAGE` to change it), gives
+every test a fresh database, and removes the container afterwards. To use an existing server instead,
+set `TEST_DATABASE_URL` to a **disposable** Postgres superuser URL (the tests create and drop
+databases on it; never point it at Neon production). It covers:
+
+- `tests/test_postgres.py`: the wallet / top-up / 402 / chat-charging tests from `test_api.py`, re-run
+  unchanged against Postgres, plus schema and isolation checks.
+- `tests/test_concurrency.py` (runs on both backends): lock tests prove each money operation waits for
+  the wallet or top-up row lock; race tests start 16 threads at once and check exact end states (no
+  overcommitted holds, no lost settle updates, a duplicate webhook credits once, the wallet cap holds),
+  plus the CHECK / foreign-key constraints. With `FOR UPDATE` removed, 6 of these fail on Postgres, so
+  they really detect the races.
+
+## Deploy to Render (with Neon Postgres)
+
+Render's free web services have no persistent disk, so the database lives in Neon (serverless
+Postgres, free tier). `render.yaml` in the repository root is a Render Blueprint for the service.
+
+**Why Render's native Python runtime and not a Dockerfile:** this is a pure-Python app with no system
+packages (`psycopg[binary]` bundles libpq), so Render's Python runtime is the simplest, idiomatic
+fit: `pip install -r requirements.txt` to build, `uvicorn` to start, Render manages the OS and Python
+patches, and there's no image to maintain. A Dockerfile is only worth adding if the app later needs
+system libraries or has to run the same image on another host.
+
+**Steps**
+
+1. **Neon:** create a project in region *AWS Asia Pacific (Singapore)*, the closest to the Render
+   region in `render.yaml`. Copy the connection string from *Connect* (pooled or direct both work; it
+   already ends in `?sslmode=require`).
+2. **Render:** *New → Blueprint*, pick this repository. Render reads `render.yaml` and asks for each
+   variable below. (Or *New → Web Service* by hand: root directory `backend`, runtime Python, build
+   `pip install -r requirements.txt`, start command as in `render.yaml`, health check `/healthz`.)
+3. Deploy. The first start creates the tables in Neon. Check `https://<service>.onrender.com/healthz`.
+
+**Environment variables to enter in Render (checklist)**
+
+| Variable | What to paste | Notes |
+|---|---|---|
+| `DATABASE_URL` | Neon connection string, e.g. `postgresql://neondb_owner:…@ep-…-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require` | **Required.** Secret. Keep `sslmode=require`. |
+| `OPENROUTER_API_KEY` | your OpenRouter key | **Required.** Secret. Consider a credit limit on the key (see warning below). |
+| `PUBLIC_BASE_URL` | `https://<service-name>.onrender.com` (no trailing slash) | Used to build `checkout_url`. |
+| `DEV_MODE` | `true` while testing; `false` for real payments | See warning below. |
+| `PAYMENT_PROVIDER` | `mock` while testing; `razorpay` once implemented | `mock` is refused unless `DEV_MODE=true`. |
+| `USD_INR_RATE` | `93` (or today's rate) | Read at startup; redeploy/restart to change. |
+| `MARGIN_PCT` | `17.65` | Fee recovery, not markup. NOTES.md §1. |
+| `PLATFORM_FEE_PCT` | `17.65` | Fee stack; only used for a startup warning. |
+| `MAX_OUTPUT_TOKENS` | `5000` | Cost-check before using paid models (see `.env.example`). |
+| `PYTHON_VERSION` | already set to `3.13.5` by `render.yaml` | Add it yourself if you create the service by hand. |
+
+Optional, same meaning as in `.env.example`: `MODEL_FAST`, `MODEL_SMART`, `MODEL_EXPERT` (pins, e.g.
+the free models used for testing), `DB_POOL_SIZE` (default 10; Neon's free tier allows far more),
+`APP_URL`, `APP_NAME`, the rate limits and the tier bands. Don't set `DATABASE_PATH` or `RENDER`.
+
+> **Warning: a `DEV_MODE=true` + `PAYMENT_PROVIDER=mock` deployment is public free credit.** Anyone who
+> finds the URL can register, "pay" on the mock checkout page and spend *your* OpenRouter balance.
+> Razorpay is not implemented yet (NOTES.md §2), so this is the only mode that works today. Use it
+> only for closed testing: pin `MODEL_*` to free models and/or put a credit limit on the OpenRouter
+> key.
+
+Free-tier behaviour to expect: the Render service sleeps after ~15 minutes without traffic and the
+next request takes up to about a minute to wake it (the app's timeouts should allow for that), and
+Neon suspends its compute when idle and resumes on the next query. The connection pool checks each
+connection before use, so stale connections after a suspend are replaced automatically.
 
 ## API (the contract the Android client is built against)
 
@@ -38,7 +119,13 @@ The tests use a fake OpenRouter (no network, no key needed) and a real SQLite fi
 | `POST /v1/wallet/topup` | Bearer | `{"amount_inr"}` (≥ 20, ≤ 2000, max 2 decimals) | `{"checkout_url", "topup_id"}` |
 | `POST /v1/wallet/topup/confirm` | optional | `{"topup_id"}` | `{"balance_inr"}` (**dev mode only**, 404 otherwise) |
 | `GET /v1/models` | – | – | `{"tiers": [{"tier", "label", "est_cost_per_message_inr"}]}` |
-| `POST /v1/chat` | Bearer | `{"tier", "message", "conversation_id", "image_base64"}` | `{"reply", "conversation_id", "cost_inr", "wallet_balance_inr"}` |
+| `POST /v1/chat` | Bearer | `{"tier", "message", "conversation_id", "image_base64"}` | `{"reply", "conversation_id", "cost_inr", "wallet_balance_inr", "truncated"}` |
+
+`truncated` (bool) is `true` only when OpenRouter reports the reply stopped at the output-token limit
+(`finish_reason == "length"`, or the provider's raw `native_finish_reason` is a max-tokens value when
+the normalised one is missing). The reply is then cut off mid-answer, so the app should say so
+(e.g. "answer was cut short, ask to continue"). It is `false` for a normal finish and whenever the
+signal is missing or ambiguous. The student is still charged for the tokens that were generated.
 
 Response bodies contain exactly these fields and nothing more (Kotlin serializers reject unknown keys
 by default). Server-only extras:
@@ -80,7 +167,7 @@ server fetches `GET https://openrouter.ai/api/v1/models` and:
 3. inside each band prefers: a cache-read discount → image input → controllable reasoning → newest.
    If the pick is text-only, the best image-capable model in the same band handles photo turns.
 
-If the refresh fails the previous choice stays; the last good list is saved in SQLite so a restart
+If the refresh fails the previous choice stays; the last good list is saved in the database so a restart
 without network still uses it. Only a cold start with no network ever uses the dated snapshot in
 `app/catalog.py:FALLBACK_MODELS`. Pin a tier with `MODEL_FAST` / `MODEL_SMART` / `MODEL_EXPERT` once
 you have quality-tested a model (pins are still priced from the live list).
@@ -93,7 +180,7 @@ user-visible price. Long conversations cost more per message; label it "about" i
 Every turn resends the whole conversation, so requests are built to keep a byte-identical, growing
 prefix that providers bill at ~10–25% of the input price on a cache hit (details in `app/chat.py`):
 
-- one fixed system prompt; history replayed verbatim from SQLite in an identical shape each turn;
+- one fixed system prompt; history replayed verbatim from the database in an identical shape each turn;
   nothing is ever trimmed or summarised (an over-long conversation gets 413, not truncation, because
   truncation would shift the prefix and miss the cache on every later turn);
 - Anthropic models get explicit `cache_control` breakpoints on the system block and the newest user
@@ -120,7 +207,7 @@ chats show no cache hits. That is expected.
   comes from unspent balance (§12). See [NOTES.md §1](NOTES.md#1-margin_pct1765-recovers-fees-it-is-not-a-markup).
 - **402 before calling the model.** The server estimates input tokens conservatively (UTF-8 bytes/3,
   plus 1,600 per image) and prices the worst case: input at the higher of input or cache-write price,
-  plus `MAX_OUTPUT_TOKENS` (1500) of output. If the wallet can't cover that, `max_tokens` is lowered to
+  plus `MAX_OUTPUT_TOKENS` (5000) of output. If the wallet can't cover that, `max_tokens` is lowered to
   what it can cover. If even `MIN_OUTPUT_TOKENS` (256) is out of reach, the request gets 402 and the
   model is never called.
 - That worst case is **reserved** (a hold) atomically before the call, so parallel requests can't
@@ -167,21 +254,22 @@ app/
   money.py       paise / unit math (Decimal + int only)
   payments.py    PaymentProvider interface, mock, Razorpay stub
   openrouter.py  async HTTP client
-  db.py          SQLite schema + helpers
+  db.py          SQLite + Postgres backends (schema in both dialects, locking notes)
   config.py      env-var settings and validation
   errors.py      single error shape
   ratelimit.py   sliding-window limiter
-tests/           pytest (unit + end-to-end through the HTTP API)
+tests/           pytest (unit + end-to-end through the HTTP API; -m postgres for real Postgres)
 ```
+
+`../render.yaml` is the Render Blueprint (see "Deploy to Render").
 
 ## Scaling
 
 v1 is deliberately simple and runs as **one process**:
 
-- **SQLite → Postgres before real scale.** Money moves already run in single transactions
-  (`BEGIN IMMEDIATE`) and holds live in the DB, so the port is mechanical: `SELECT … FOR UPDATE` on
-  the wallet row.
+- **Postgres is supported** (`DATABASE_URL`) and is the production database. Money moves lock the
+  wallet row (`SELECT … FOR UPDATE`), so they are already safe across several workers or instances.
 - Rate limits and the per-conversation lock are in-process. Move them to Redis before running more than
   one worker or instance.
-- Photos are stored as base64 in SQLite (they must be resent each turn for the cache prefix). Move them
+- Photos are stored as base64 in the database (they must be resent each turn for the cache prefix). Move them
   to object storage with a retention policy.

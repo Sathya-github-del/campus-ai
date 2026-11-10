@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+*.db
+
+# Android
+android/.gradle/
+android/app/build/
+android/local.properties
+android/.android-user/
+android/*.keystore
+android/debug.keystore
+*.iml
+.idea/
+
+# secrets
+secrets/
