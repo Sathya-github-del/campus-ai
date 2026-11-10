@@ -1,11 +1,12 @@
-# Straight Answer — Android client
+# QUATRIO AI — Android client
 
-> **Straight Answer**, applicationId and Kotlin package `dev.straightanswer.app` (renamed from the
-> `dev.studyapp.app` placeholder: namespace, applicationId, every package/import, `app_name`, the
-> `Application` class `StraightAnswerApp`, theme `Theme.StraightAnswer`, `rootProject.name`, logcat tag
-> `StraightAnswer`). The in-app UI still deliberately shows no product name; the launcher label does.
-> A changed applicationId is a **new app** to Android: an installed `dev.studyapp.app` build is not
-> upgraded in place, and its guest token (and wallet) stays with the old app.
+> **QUATRIO AI**, applicationId and Kotlin package `dev.quatrioai.app` (renamed from the
+> `dev.studyapp.app` placeholder, then from an interim `dev.straightanswer.app`: namespace,
+> applicationId, every package/import, `app_name`, the `Application` class `QuatrioAiApp`, theme
+> `Theme.QuatrioAi`, `rootProject.name`, logcat tag `QuatrioAI`). The in-app UI still deliberately
+> shows no product name; the launcher label does.
+> A changed applicationId is a **new app** to Android: an installed `dev.straightanswer.app` or
+> `dev.studyapp.app` build is not upgraded in place, and its guest token (and wallet) stays with the old app.
 
 Pay-per-answer AI for anyone with a quick question: students, professionals checking something,
 people drafting a message, debugging code, or just curious. Top up from ₹20 with UPI and pay for each
@@ -120,7 +121,7 @@ writes `local.properties`, and creates a project-local `debug.keystore` if missi
 | Build | Default | Override |
 |---|---|---|
 | debug | `http://10.0.2.2:8000` (host machine, seen from the emulator) | `./build.sh assembleDebug -PapiBaseUrl=http://192.168.1.20:8000` |
-| release | `https://api.straightanswer.invalid` (placeholder) | `-PreleaseApiBaseUrl=https://…` |
+| release | `https://api.quatrioai.invalid` (placeholder) | `-PreleaseApiBaseUrl=https://…` |
 
 Physical phone over USB without LAN setup: `adb reverse tcp:8000 tcp:8000` and build with
 `-PapiBaseUrl=http://127.0.0.1:8000`. Use the same trick if the **emulator** can't reach `10.0.2.2`.
@@ -173,7 +174,7 @@ TopUpFlow.topUp(amount)
   The backend must credit the wallet from Razorpay's **webhook** (never from the client's word), and
   `TopUpFlow` then re-fetches the balance. Since the webhook can lag, the gateway may need to poll
   `GET /v1/wallet` briefly. Razorpay Checkout needs an `Activity`, so that gateway will also need an
-  activity-result hook. Select it in `StraightAnswerApp.kt`.
+  activity-result hook. Select it in `QuatrioAiApp.kt`.
 
 ## Backend API contract (what the client calls)
 
@@ -203,7 +204,7 @@ size is the count, `cost_inr`/`total_inr`), numbers may be JSON numbers or strin
 without a zone (no zone = UTC) or epoch seconds/milliseconds, and the list may be under `items`, `history`,
 `conversations`, `data`, `results` or be the whole body. Items without any id are skipped (they couldn't be
 deleted); unknown tier keys show without a tier tag. Unknown fields and skipped items are logged once per
-load (logcat tag `StraightAnswer`), never fatal. Only a non-JSON body or one with no list is an error. `truncated` (the reply stopped at the model's length
+load (logcat tag `QuatrioAI`), never fatal. Only a non-JSON body or one with no list is an error. `truncated` (the reply stopped at the model's length
 limit) is new and optional on the client: absent or `null` reads as `false`, so older backends still work.
 
 ## Answer rendering: Markdown and maths
@@ -255,26 +256,25 @@ unsupported.
 
 ## App icon
 
-Generated from the 1024px artwork (`icon-v2-1024.png` flat, `icon-v2-fg-1024.png` foreground) with a small
-Pillow script, at the standard densities: adaptive foreground 108dp (108/162/216/324/432 px for
+Generated from a single 1254px source mark (the supplied logo artwork, pure-black background) with a
+small Pillow script, at the standard densities: adaptive foreground 108dp (108/162/216/324/432 px for
 mdpi…xxxhdpi), legacy icons 48dp (48/72/96/144/192 px) as `ic_launcher.png` (rounded square) and
 `ic_launcher_round.png` (circle). `mipmap-anydpi/ic_launcher.xml` and `ic_launcher_round.xml` use a plain
-`@color/launcher_bg` (`#130F0C`, Ink.Bg) background and the PNG foreground, which also serves as the
-monochrome layer for Android 13 themed icons. The old vector placeholder (`drawable/ic_launcher_foreground.xml`) is gone.
+`@color/launcher_bg` (`#000000`, matching the mark's own backdrop) background and the PNG foreground;
+monochrome layer (Android 13 themed icons) is a separate white-silhouette PNG generated from the same
+alpha mask (`ic_launcher_monochrome.png` per density).
 
-Two things about the supplied files, handled in the conversion:
+Two things handled in the conversion:
 
-* **The "foreground" PNG was not transparent.** It is fully opaque, identical to the flat icon with the
-  dark background baked in. The script recovers a true alpha mask by un-blending each pixel along the
-  background → amber (`#FFA32A`) axis, so the anti-aliased edges stay smooth on any launcher background.
-* **The mark extended past the adaptive-icon safe zone.** On the 108dp canvas the ₹ and its underline
-  reach about 42dp from the centre; the safe zone is a 33dp radius and a circular launcher mask shows only
-  36dp, so the underline would have been clipped. The foreground is scaled to 75.8% about the centre so
-  the farthest pixel sits at ~32dp. Checked against circle, squircle and full-bleed masks.
+* **The source had no alpha channel.** Near-black pixels (R,G,B all under 18) are made transparent to
+  recover a clean cutout of the mark; everything else keeps its original color at full opacity.
+* **Fitting the adaptive-icon safe zone.** The cutout is cropped to its bounding box, then centered on
+  the 432px (xxxhdpi) canvas scaled to 60% of the canvas on its longest side — comfortably inside the
+  61%-diameter (66dp of 108dp) circular safe zone, checked against a circular mask overlay.
 
-With minSdk 26 the framework always resolves the adaptive XML, so the legacy PNGs are a fallback for
-launchers/tools that load density bitmaps directly. If design wants a bigger mark, supply a foreground with
-the art inside the central 66dp circle (≈626px of 1024) on a transparent background.
+With minSdk 26 the framework always resolves the adaptive XML, so the legacy PNGs (generated from the
+full square source, background included) are a fallback for launchers/tools that load density bitmaps
+directly.
 
 ## Decisions & assumptions
 

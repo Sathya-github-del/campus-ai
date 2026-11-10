@@ -1,6 +1,6 @@
 # campus-ai backend
 
-Backend for **Straight Answer**, a pay-as-you-go AI study-chat Android app for Indian students
+Backend for **QUATRIO AI**, a pay-as-you-go AI study-chat Android app for Indian students
 (`campus-ai` stays the internal repo/package name).
 Students top up a closed-loop rupee wallet (UPI, from ₹20) and pay per message on a Fast / Smart /
 Expert tier. Models are reached through OpenRouter. Product research and economics: `../BLUEPRINT.md`.

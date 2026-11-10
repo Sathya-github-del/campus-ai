@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Adaptive launcher icon: plain espresso-black layer (Ink.Bg) behind the lit-amber rupee mark.
-     The foreground PNGs are generated from the 1024px artwork at each density (see README "App icon")
-     and inset so the whole mark sits inside the 66dp safe zone. Monochrome (Android 13 themed
-     icons) reuses the foreground's alpha. -->
+<!-- Adaptive launcher icon: pure-black layer behind the QUATRIO AI mark (supplied artwork,
+     cut to alpha and inset so it sits inside the 66dp safe zone; see README "App icon").
+     Monochrome (Android 13 themed icons) uses a white-silhouette version of the same alpha mask. -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/launcher_bg" />
     <foreground android:drawable="@mipmap/ic_launcher_foreground" />
-    <monochrome android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />
 </adaptive-icon>

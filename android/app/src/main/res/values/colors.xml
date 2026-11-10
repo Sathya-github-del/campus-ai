@@ -1,5 +1,5 @@
 <resources>
     <!-- Matches Ink.Bg in ui/Theme.kt: the app is always dark ("night meter"), so there is no values-night override. -->
     <color name="bg">#FF130F0C</color>
-    <color name="launcher_bg">#FF130F0C</color>
+    <color name="launcher_bg">#FF000000</color>
 </resources>
