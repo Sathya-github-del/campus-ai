@@ -31,7 +31,7 @@ from decimal import Decimal
 
 from .catalog import Catalog, ModelInfo
 from .config import Settings
-from .db import DB
+from .db import Database
 from .errors import APIError
 from .money import UNITS_PER_PAISA, UNITS_PER_RUPEE, charge_multiplier, floor_div, paise_to_inr, \
     units_to_inr, units_to_paise_ceil, usd_to_units
@@ -202,6 +202,29 @@ def _reply_text(body: dict) -> str:
     return (content or "").strip()
 
 
+# finish_reason values meaning "stopped at the max_tokens limit". OpenRouter normalises finish_reason
+# to "length"; native_finish_reason is the provider's raw value (Anthropic "max_tokens", Google
+# "MAX_TOKENS", OpenAI "length", Responses-style "max_output_tokens").
+_LENGTH_REASONS = frozenset({"length", "max_tokens", "max_output_tokens"})
+
+
+def _was_truncated(body: dict) -> bool:
+    """True only when the upstream explicitly says the reply hit the token limit. Anything missing,
+    malformed or ambiguous is False: never claim a truncation the provider didn't report."""
+    try:
+        choice = body["choices"][0]
+    except (KeyError, IndexError, TypeError):
+        return False
+    if not isinstance(choice, dict):
+        return False
+    reason = choice.get("finish_reason")
+    if isinstance(reason, str) and reason:
+        return reason.lower() == "length"
+    # Normalised value absent: fall back to the provider's raw reason.
+    native = choice.get("native_finish_reason")
+    return isinstance(native, str) and native.lower() in _LENGTH_REASONS
+
+
 def _map_upstream(e: UpstreamError) -> APIError:
     if e.status == 402:
         log.critical("OpenRouter account is out of credit: %s", e.message)
@@ -228,7 +251,7 @@ class ChatRequestData:
 
 
 class ChatService:
-    def __init__(self, settings: Settings, db: DB, wallet: Wallet, catalog: Catalog, client):
+    def __init__(self, settings: Settings, db: Database, wallet: Wallet, catalog: Catalog, client):
         self.s = settings
         self.db = db
         self.wallet = wallet
@@ -338,6 +361,7 @@ class ChatService:
         try:
             body = await self.client.chat(payload)
             reply = _reply_text(body)
+            truncated = _was_truncated(body)
         except UpstreamError as e:
             self.wallet.release(hold_id)
             raise _map_upstream(e)
@@ -346,6 +370,8 @@ class ChatService:
             raise
 
         usage = body.get("usage") or {}
+        if truncated:
+            log.info("reply hit max_tokens=%d on %s (conversation %s)", max_out, model.id, conv_id)
         cost_usd = actual_cost_usd(usage, model)
         cost_units = usd_to_units(cost_usd, s.usd_inr_rate, s.margin_pct)
         # Never bill above what was pre-authorised; an estimate miss is the platform's loss, not the user's.
@@ -375,4 +401,5 @@ class ChatService:
             "conversation_id": conv_id,
             "cost_inr": units_to_inr(billable),
             "wallet_balance_inr": paise_to_inr(result.available_paise),
+            "truncated": truncated,
         }

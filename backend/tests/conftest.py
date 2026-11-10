@@ -1,8 +1,15 @@
-"""Shared fixtures: a fake OpenRouter (no network) and an app on a temp SQLite file."""
+"""Shared fixtures: a fake OpenRouter (no network), an app on a temp SQLite file, and (opt-in, marker
+`postgres`) a real Postgres: TEST_DATABASE_URL if set, otherwise a throwaway postgres:16 Docker container."""
 from __future__ import annotations
 
 import base64
 import copy
+import os
+import shutil
+import subprocess
+import time
+import uuid
+from urllib.parse import urlsplit, urlunsplit
 from decimal import Decimal
 
 import pytest
@@ -64,6 +71,8 @@ class FakeOpenRouter:
         self.calls: list[dict] = []
         self.cost = Decimal("0.001")
         self.reply = "Step 1: ..."
+        self.finish_reason: str | None = "stop"
+        self.native_finish_reason: str | None = None
         self.fail: UpstreamError | None = None
         self.list_fail = False
 
@@ -78,7 +87,8 @@ class FakeOpenRouter:
             raise self.fail
         return {
             "id": "gen-1", "model": payload["model"],
-            "choices": [{"message": {"role": "assistant", "content": self.reply}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": self.reply},
+                         "finish_reason": self.finish_reason, "native_finish_reason": self.native_finish_reason}],
             "usage": {"prompt_tokens": 1200, "completion_tokens": 300, "total_tokens": 1500,
                       "cost": float(self.cost),
                       "prompt_tokens_details": {"cached_tokens": 900, "cache_write_tokens": 0}},
@@ -122,3 +132,64 @@ def top_up(client, headers, amount=100) -> float:
 PNG_B64 = base64.b64encode(bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
     "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082")).decode()
+
+
+# ------------------------------------------------------------------ Postgres (opt-in: pytest -m postgres)
+
+PG_IMAGE = os.environ.get("TEST_PG_IMAGE", "postgres:16-alpine")
+
+
+def _wait_for_pg(url: str, timeout: float = 60) -> None:
+    import psycopg
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with psycopg.connect(url, connect_timeout=2) as conn:
+                conn.execute("SELECT 1")
+            return
+        except psycopg.OperationalError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.3)
+
+
+@pytest.fixture(scope="session")
+def pg_admin_url():
+    """A Postgres server for the whole test session (superuser URL to its `postgres` database)."""
+    pytest.importorskip("psycopg", reason="pip install -r requirements.txt for the Postgres tests")
+    url = os.environ.get("TEST_DATABASE_URL")
+    if url:
+        yield url
+        return
+    if not shutil.which("docker"):
+        pytest.skip("Postgres tests need Docker or TEST_DATABASE_URL")
+    name = f"campus-ai-test-pg-{uuid.uuid4().hex[:8]}"
+    try:
+        subprocess.run(["docker", "run", "-d", "--rm", "--name", name, "-e", "POSTGRES_PASSWORD=test",
+                        "-p", "127.0.0.1::5432", PG_IMAGE], check=True, capture_output=True, text=True,
+                       timeout=300)
+    except (subprocess.SubprocessError, OSError) as e:
+        pytest.skip(f"could not start a Postgres container: {getattr(e, 'stderr', '') or e}")
+    try:
+        port = subprocess.run(["docker", "port", name, "5432/tcp"], check=True, capture_output=True,
+                              text=True).stdout.split()[0].rsplit(":", 1)[1]
+        url = f"postgresql://postgres:test@127.0.0.1:{port}/postgres"
+        _wait_for_pg(url)
+        yield url
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+
+
+@pytest.fixture
+def pg_url(pg_admin_url):
+    """A fresh, empty database per test (the app creates the schema itself, as in production)."""
+    import psycopg
+
+    dbname = f"t_{uuid.uuid4().hex[:12]}"
+    with psycopg.connect(pg_admin_url, autocommit=True) as conn:
+        conn.execute(f"CREATE DATABASE {dbname}")
+    parts = urlsplit(pg_admin_url)
+    yield urlunsplit(parts._replace(path=f"/{dbname}"))
+    with psycopg.connect(pg_admin_url, autocommit=True) as conn:
+        conn.execute(f"DROP DATABASE IF EXISTS {dbname} WITH (FORCE)")

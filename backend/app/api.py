@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .catalog import TIER_LABELS, Catalog
 from .chat import ChatRequestData, ChatService, estimate_message_inr
 from .config import TIERS, Settings
-from .db import DB
+from .db import Database, open_db
 from .errors import APIError, install_handlers
 from .money import AmountError, inr_to_paise, paise_to_inr
 from .openrouter import OpenRouterClient
@@ -81,6 +81,7 @@ class ChatOut(BaseModel):
     conversation_id: str
     cost_inr: float
     wallet_balance_inr: float
+    truncated: bool = False
 
 
 def hash_token(token: str) -> str:
@@ -88,11 +89,13 @@ def hash_token(token: str) -> str:
 
 
 def create_app(settings: Settings | None = None, *, client=None, provider: PaymentProvider | None = None,
-               db: DB | None = None, refresh_models: bool = True) -> FastAPI:
+               db: Database | None = None, refresh_models: bool = True) -> FastAPI:
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s: %(message)s")
     settings = settings or Settings.from_env()
-    db = db or DB(settings.database_path)
+    owns_db = db is None
+    if db is None:
+        db = open_db(settings.database_url, settings.database_path, pool_size=settings.db_pool_size)
     client = client or OpenRouterClient(settings)
     provider = provider or build_provider(settings)
     wallet = Wallet(db, hold_ttl_seconds=settings.upstream_timeout_seconds * 2 + 60)
@@ -122,6 +125,8 @@ def create_app(settings: Settings | None = None, *, client=None, provider: Payme
             task.cancel()
         if hasattr(client, "aclose"):
             await client.aclose()
+        if owns_db:
+            db.close()
 
     app = FastAPI(title="campus-ai backend", version="0.1.0", lifespan=lifespan)
     install_handlers(app)

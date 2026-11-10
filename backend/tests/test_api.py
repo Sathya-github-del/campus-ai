@@ -179,7 +179,8 @@ def test_chat_deducts_metered_cost(client, fake):
                                       "conversation_id": None, "image_base64": None}, headers=h)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) == {"reply", "conversation_id", "cost_inr", "wallet_balance_inr"}
+    assert set(body) == {"reply", "conversation_id", "cost_inr", "wallet_balance_inr", "truncated"}
+    assert body["truncated"] is False
     units = usd_to_units(Decimal("0.001"), Decimal("93"), Decimal("5"))  # 0.093/0.95 = Rs 0.0979
     assert units == 97895
     assert body["cost_inr"] == 0.0979
@@ -315,3 +316,45 @@ def test_wallet_holds_prevent_double_spend(client):
     assert client.get("/v1/wallet", headers=h).json() == {"balance_inr": 0.40}
     w.release(first)
     assert client.get("/v1/wallet", headers=h).json() == {"balance_inr": 1.0}
+
+
+def test_normal_finish_is_not_truncated(client, fake):
+    h = register(client)
+    top_up(client, h, 100)
+    fake.finish_reason = "stop"
+    r = client.post("/v1/chat", json={"tier": "fast", "message": "What is 2+2?"}, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["truncated"] is False
+
+
+def test_length_limited_reply_is_truncated(client, fake):
+    h = register(client)
+    top_up(client, h, 100)
+    fake.reply = r"... \frac{933.6}{20} \approx"
+    fake.finish_reason = "length"
+    fake.native_finish_reason = "max_tokens"
+    r = client.post("/v1/chat", json={"tier": "expert", "message": "Solve step by step"}, headers=h)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["truncated"] is True
+    assert body["reply"].endswith(r"\approx")
+    assert body["cost_inr"] > 0  # still billed for what was generated
+
+
+@pytest.mark.parametrize("finish, native, expected", [
+    (None, None, False),             # signal missing: never claim truncation
+    ("", None, False),
+    ("content_filter", None, False),
+    ("error", "max_tokens", False),  # normalised reason wins over the raw one
+    ("LENGTH", None, True),
+    (None, "max_tokens", True),      # normalised reason missing: fall back to the provider's raw value
+    (None, "MAX_TOKENS", True),
+    (None, "end_turn", False),
+])
+def test_truncated_flag_edge_cases(client, fake, finish, native, expected):
+    h = register(client)
+    top_up(client, h, 100)
+    fake.finish_reason, fake.native_finish_reason = finish, native
+    r = client.post("/v1/chat", json={"tier": "fast", "message": "hi"}, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["truncated"] is expected

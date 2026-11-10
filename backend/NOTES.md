@@ -82,6 +82,43 @@ run against the test fake. Request shape follows OpenRouter's docs (cache_contro
    rule, and today it picks a dated snapshot. Use `MODEL_FAST` etc. to pin models that pass a small
    evaluation set of real student questions (Hindi and Hinglish included).
 
+## 5a. Postgres (Neon) is the production database; what is and isn't verified
+
+**Done:** `DATABASE_URL` switches the backend from SQLite to Postgres (psycopg 3, small connection pool).
+SQLite stays the default for local dev and the default test run. Same schema in both dialects (same
+CHECKs, including `balance_paise >= 0` and `0 <= credit_units < 10000`, same FKs and indexes). Every
+money transaction locks the user's wallet row first (`SELECT … FOR UPDATE`, READ COMMITTED pinned per
+connection); `apply_payment` locks the top-up row. Reasoning is in `PostgresDB.tx()` (`app/db.py`).
+Render runs on the native Python runtime from `../render.yaml`; README "Deploy to Render" has the
+env-var checklist.
+
+**Verified:** Docker was available, so `pytest -m postgres` runs the money-path API tests and the
+concurrency tests against a real `postgres:16-alpine` container (balance deduction, 402, top-up +
+confirm, duplicate webhook, wallet cap, 16-thread races, constraint enforcement). Removing `FOR UPDATE`
+makes 6 of them fail (overcommitted holds, lost settle updates, overspending), so they really catch
+races. A manual uvicorn run against Postgres through the env-var path (register → top-up → double
+confirm → chat) also worked.
+
+**Not verified / still open:**
+- **Not run against Neon itself** (no Neon account here). First deploy checks: the service starts and
+  creates tables; `/healthz` responds; a top-up + confirm + chat round trip; a request after Neon's
+  idle suspend still works (the pool checks connections before use, which should cover it).
+- **No migration tool.** The schema is `CREATE TABLE IF NOT EXISTS` on startup, which only creates
+  missing tables; it never alters existing ones. The first column change after launch needs a real
+  migration step (Alembic or numbered SQL files). Existing local SQLite data is not copied to
+  Postgres (there's no script); that is dev data only.
+- **Blocking DB calls on the event loop.** `POST /v1/chat` is async and calls the (sync) DB directly. On
+  local SQLite that cost nothing; on Neon each call is a network round trip (a few ms within Singapore)
+  during which the event loop is blocked. That's fine at test scale. Before real load, run the DB
+  work in a thread (`run_in_threadpool`) or switch to psycopg's async API.
+- **Backups:** depend on Neon's plan (the free tier keeps only a short point-in-time restore window).
+  Decide on a backup/export routine before real money is held.
+- **Registration rate limit vs Render's proxy.** The start command trusts `X-Forwarded-For` from any
+  peer (`--forwarded-allow-ips '*'`); otherwise every student would share the proxy's IP and the
+  20/hour registration limit would apply to everyone at once. The catch is that a client can spoof
+  that header to get past the per-IP limit. That only costs empty wallets, but it should be revisited
+  with the account/abuse work in §3.
+
 ## 6. Smaller known gaps
 
 - `USD_INR_RATE` is read at startup. Edit `.env` and restart to change it (a live rate feed is not
@@ -98,6 +135,7 @@ run against the test fake. Request shape follows OpenRouter's docs (cache_contro
   BLUEPRINT §8. Messages are stored server-side already because context and caching need them.
 - The ≤ 1-paisa prepaid sub-paisa credit isn't included in `balance_inr` (it shows whole paise).
 - Holds expire after 2 × `UPSTREAM_TIMEOUT_SECONDS` + 60 s, in case a process dies mid-call.
-- Single process only: in-memory rate limits and conversation locks. See README "Scaling".
+- Single process only: in-memory rate limits and conversation locks. See README "Scaling". (Wallet
+  money moves are already safe across processes on Postgres; only these two are in-process.)
 - The PPI/RBI classification of the wallet still needs the professional check in BLUEPRINT §9.1. The
   code only guarantees the closed-loop shape (no transfer or cash-out paths, per-top-up and wallet caps).
