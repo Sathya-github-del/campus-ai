@@ -33,6 +33,25 @@ from .test_api import (  # noqa: F401  (collected as tests in this module)
     test_webhook_path_checks_amount,
 )
 
+from .test_accounts import (  # noqa: F401  (collected as tests in this module)
+    test_anonymous_account_can_be_deleted,
+    test_anonymous_accounts_cannot_log_in,
+    test_anonymous_register_still_works_alongside_signup,
+    test_delete_account_removes_everything_and_forfeits_balance,
+    test_delete_account_requires_auth,
+    test_delete_history_enforces_ownership,
+    test_delete_history_removes_conversation_and_messages_only,
+    test_duplicate_signup_rejected_case_insensitively,
+    test_forgot_password_never_reveals_whether_an_email_exists,
+    test_history_limit_and_auth,
+    test_history_lists_only_the_callers_conversations_newest_first,
+    test_login_failures_are_generic,
+    test_login_returns_a_working_token_and_signs_out_the_old_one,
+    test_signed_up_account_can_top_up_and_chat,
+    test_signup_creates_user_with_wallet_and_hashed_password,
+    test_signup_validation,
+)
+
 pytestmark = pytest.mark.postgres
 
 
@@ -83,3 +102,25 @@ def test_tx_is_read_committed_even_if_server_default_differs(pg_url):
             assert c.execute("SHOW transaction_isolation").fetchone()[0] == "read committed"
     finally:
         db.close()
+
+
+def test_migration_adds_account_columns_to_an_old_database(pg_url):
+    # The production Neon database was created by v0.1, before users had email/password_hash.
+    import psycopg
+
+    with psycopg.connect(pg_url, autocommit=True) as conn:
+        conn.execute("CREATE TABLE users (id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, "
+                     "created_at DOUBLE PRECISION NOT NULL)")
+        conn.execute("INSERT INTO users VALUES ('u_old', 'h', 1.0)")
+    db = PostgresDB(pg_url, pool_size=1)
+    try:
+        assert db.one("SELECT email, password_hash FROM users WHERE id='u_old'") == \
+            {"email": None, "password_hash": None}
+        db.x("UPDATE users SET email='a@example.com' WHERE id='u_old'")
+        with pytest.raises(psycopg.IntegrityError):  # unique index exists
+            db.x("INSERT INTO users(id, token_hash, created_at, email) VALUES('u2', 'h2', 1, 'a@example.com')")
+        db.x("INSERT INTO users(id, token_hash, created_at) VALUES('u3', 'h3', 1)")  # NULLs don't collide
+        db.x("INSERT INTO users(id, token_hash, created_at) VALUES('u4', 'h4', 1)")
+    finally:
+        db.close()
+    PostgresDB(pg_url, pool_size=1).close()  # second start: nothing left to migrate, no error

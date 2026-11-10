@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from app.accounts import delete_account
 from app.db import PostgresDB, SQLiteDB
 from app.money import UNITS_PER_PAISA
 from app.wallet import TopupError, Wallet, new_id
@@ -129,6 +130,56 @@ def test_settle_waits_for_wallet_lock(db, wallet):
     assert_waits_for(other_tx(), settle)
     # Neither write is lost: 1000 - 200 (concurrent writer) - 30 (charge)
     assert db.one("SELECT balance_paise FROM wallets WHERE user_id=?", (uid,))["balance_paise"] == 770
+
+
+def test_delete_account_waits_for_wallet_lock_and_sees_committed_money(db, wallet):
+    uid = make_user(db, 1000)
+
+    @contextmanager
+    def other_tx():  # a money move in flight: holds the wallet lock and writes a ledger row
+        with db.tx() as c:
+            lock_wallet_row(c, db, uid)
+            c.execute("UPDATE wallets SET balance_paise=900 WHERE user_id=?", (uid,))
+            c.execute("INSERT INTO ledger(user_id, ts, kind, amount_paise, balance_after_paise, ref) "
+                      "VALUES(?,?,?,?,?,?)", (uid, time.time(), "chat", -100, 900, "conv_x"))
+            yield
+
+    assert_waits_for(other_tx(), lambda: delete_account(db, uid))
+    # The row committed while deletion waited is deleted too (fresh snapshot after the lock).
+    for table in ("ledger", "wallets", "holds", "topups", "conversations"):
+        assert db.q(f"SELECT 1 FROM {table} WHERE user_id=?", (uid,)) == [], table
+    assert db.q("SELECT 1 FROM users WHERE id=?", (uid,)) == []
+
+
+def test_delete_account_waits_for_conversation_lock(db, wallet):
+    # Chat turns lock their conversation row before the wallet; deletion takes the same order.
+    uid = make_user(db, 1000)
+    now = time.time()
+    db.x("INSERT INTO conversations(id, user_id, created_at, updated_at) VALUES(?,?,?,?)", ("conv_a", uid, now, now))
+
+    @contextmanager
+    def chat_tx():
+        with db.tx() as c:
+            c.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now + 1, "conv_a"))
+            c.execute("INSERT INTO messages(conversation_id, role, content, created_at) VALUES(?,?,?,?)",
+                      ("conv_a", "user", "hi", now))
+            yield
+
+    assert_waits_for(chat_tx(), lambda: delete_account(db, uid))
+    assert db.q("SELECT 1 FROM messages WHERE conversation_id='conv_a'") == []
+    assert db.q("SELECT 1 FROM conversations WHERE user_id=?", (uid,)) == []
+
+
+def test_settle_after_account_deletion_rolls_back_cleanly(db, wallet):
+    # A chat that was mid-call when the account was deleted must not leave money rows behind.
+    uid = make_user(db, 1000)
+    hold = wallet.reserve(uid, 50)
+    delete_account(db, uid)
+    with pytest.raises(Exception):
+        with db.tx() as c:
+            wallet.settle(c, uid, hold, 30 * UNITS_PER_PAISA, ref="x")
+    assert db.q("SELECT 1 FROM ledger WHERE user_id=?", (uid,)) == []
+    assert db.q("SELECT 1 FROM wallets WHERE user_id=?", (uid,)) == []
 
 
 def test_duplicate_payment_waits_for_topup_lock(db, wallet):

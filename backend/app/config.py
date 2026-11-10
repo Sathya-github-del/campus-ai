@@ -78,7 +78,11 @@ class Settings:
     # --- abuse limits (per token unless noted) ---
     rate_limit_per_minute: int = 60
     chat_rate_limit_per_minute: int = 12
-    register_limit_per_hour_per_ip: int = 20
+    register_limit_per_hour_per_ip: int = 20  # also covers /v1/auth/signup (both create a wallet)
+    # Login attempts (successful or not) per 15 minutes: slows password guessing against one account,
+    # and from one IP across accounts.
+    login_limit_per_15min_per_email: int = 10
+    login_limit_per_15min_per_ip: int = 50
 
     # --- model catalog / tiers ---
     models_refresh_seconds: int = 6 * 3600
@@ -145,6 +149,8 @@ class Settings:
             rate_limit_per_minute=_int("RATE_LIMIT_PER_MINUTE", 60),
             chat_rate_limit_per_minute=_int("CHAT_RATE_LIMIT_PER_MINUTE", 12),
             register_limit_per_hour_per_ip=_int("REGISTER_LIMIT_PER_HOUR_PER_IP", 20),
+            login_limit_per_15min_per_email=_int("LOGIN_LIMIT_PER_15MIN_PER_EMAIL", 10),
+            login_limit_per_15min_per_ip=_int("LOGIN_LIMIT_PER_15MIN_PER_IP", 50),
             models_refresh_seconds=_int("MODELS_REFRESH_SECONDS", 6 * 3600),
             fast_max_usd_per_m=_dec("FAST_MAX_USD_PER_M", "0.75"),
             smart_max_usd_per_m=_dec("SMART_MAX_USD_PER_M", "4"),

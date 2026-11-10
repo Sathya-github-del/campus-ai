@@ -1,4 +1,4 @@
-# Known gaps and decisions to make (backend v0.1)
+# Known gaps and decisions to make (backend v0.2, app name: Straight Answer)
 
 Ordered by how much they matter before real money moves.
 
@@ -51,12 +51,51 @@ HMAC-SHA256 verification of the raw webhook body** (constant-time compare, befor
 whose webhook never arrived. Also not built: failed/expired top-up cleanup, refunds, and an admin view
 of the ledger. Google Play alternative billing (§5) needs its own user-choice flow on the client.
 
-## 3. Anonymous tokens: a lost phone means a lost balance
+## 3. Accounts: email/password is built; what's still missing
 
-Registration is anonymous, as specified. If the app is reinstalled or the phone is lost, the token and
-the paid balance are gone, with no way to recover them. That's acceptable for testing, but not once
-students pay real money: add phone-OTP or Google sign-in (and token rotation/expiry) before launch.
-There is also no way yet to delete an account or its data.
+**Built (v0.2):** `POST /v1/auth/signup` and `/v1/auth/login` (email + password, argon2id hashes,
+generic login errors, a dummy hash check for unknown emails so response time doesn't reveal them,
+per-email and per-IP login limits), `DELETE /v1/account`, and history list/delete (README API table).
+Anonymous `POST /v1/auth/register` still works unchanged for quick testing. Both kinds of account use
+the same token mechanism (`users.token_hash`), so the auth check didn't change.
+
+**Gaps, most important first:**
+- **Password reset doesn't send email.** `POST /v1/auth/forgot-password` is a stub: it always answers
+  "If an account exists for that email, we've sent it a link…" (so it can't be used to discover which
+  emails have accounts) but sends nothing and stores nothing. A student who forgets their password
+  can't get back in, and their balance is stuck. Needs: an email provider (e.g. SES, Postmark,
+  Resend), a single-use, short-lived reset token table (store only its hash), a reset endpoint, and a
+  page or deep link. Until then, don't tell testers the reset link works.
+- **No email verification.** Anyone can sign up with someone else's address, and the real owner then
+  gets `409 email_taken`. Fix together with the reset email (same sending path).
+- **One token per account, no expiry.** Login replaces the stored token, so signing in on a second
+  phone signs the first one out (it gets `401 unauthorized`, message "You're signed out. Please sign
+  in again."). Tokens never expire. A `sessions` table (several tokens per user, expiry, "sign out
+  everywhere") is the next step; it means changing `resolve_user` in `api.py`.
+- **No way to upgrade an anonymous account.** A tester with an anonymous token and a balance who then
+  signs up gets a *new, empty* account. If anonymous accounts stay in the app, add "attach email to
+  this account" (signup called with the anonymous Bearer token).
+- **Account deletion doesn't ask for the password again.** Anyone holding the token (e.g. an unlocked
+  phone) can delete the account. Consider requiring the password for email accounts.
+- **Account deletion also deletes the ledger and top-up rows**, as requested ("everything tied to
+  them"). That includes the record of real payments received. Indian tax and accounting rules
+  generally require keeping transaction records for years, so before real money moves, check with the
+  CA (BLUEPRINT §9) whether these rows should be kept with the user link removed (`user_id` is already
+  a random id with no personal data once the `users` row is gone) instead of deleted.
+- **A payment that completes after deletion is lost.** If the student deletes the account while a
+  top-up is pending and then pays, the webhook finds no top-up (`404 topup_not_found`) and nothing is
+  credited. Harmless with mock payments; the Razorpay work (§2) must refund such payments.
+- **An answer in flight during account deletion errors.** The chat request then fails (500) when it
+  tries to save and charge; nothing is written and the student isn't charged, but the platform pays
+  OpenRouter for that answer. Rare; acceptable for now.
+- Not built: changing the email or password, Google / phone-OTP sign-in.
+
+**Suggested confirmation copy for "Delete account" in the app** (balance is forfeited; there is no
+payout mechanism and there must not be one, BLUEPRINT §5, §9):
+
+> Delete your Straight Answer account? This permanently deletes your account, all your conversations
+> and your wallet. Your remaining balance of ₹{balance} will be lost. It can't be refunded or moved to
+> another account. This can't be undone.
 
 ## 4. Children's data (school students)
 
@@ -78,7 +117,11 @@ run against the test fake. Request shape follows OpenRouter's docs (cache_contro
    `messages.cached_tokens > 0` from turn 2 onwards. A short conversation never caches (provider
    minimums).
 2. Compare `messages.cost_usd` with the OpenRouter activity page for the same generations.
-3. Check that the Fast pick's answers are good enough. "Newest in band" is a price rule, not a quality
+3. Since v0.2 the local `.env` pins only `MODEL_FAST` (to a free model); Smart and Expert are chosen by
+   live price (on 2026-11-10 that gave Smart `openai/gpt-6.1-terra-pro`, ≈ ₹0.26 per typical message,
+   and Expert `anthropic/claude-fable-5.2`, ≈ ₹2.08). Photo turns on Fast go to the best paid vision
+   model in the Fast band, because the free pin is text-only.
+4. Check that the Fast pick's answers are good enough. "Newest in band" is a price rule, not a quality
    rule, and today it picks a dated snapshot. Use `MODEL_FAST` etc. to pin models that pass a small
    evaluation set of real student questions (Hindi and Hinglish included).
 
@@ -103,10 +146,13 @@ confirm → chat) also worked.
 - **Not run against Neon itself** (no Neon account here). First deploy checks: the service starts and
   creates tables; `/healthz` responds; a top-up + confirm + chat round trip; a request after Neon's
   idle suspend still works (the pool checks connections before use, which should cover it).
-- **No migration tool.** The schema is `CREATE TABLE IF NOT EXISTS` on startup, which only creates
-  missing tables; it never alters existing ones. The first column change after launch needs a real
-  migration step (Alembic or numbered SQL files). Existing local SQLite data is not copied to
-  Postgres (there's no script); that is dev data only.
+- **No real migration tool.** The schema is `CREATE TABLE IF NOT EXISTS` on startup, plus a small
+  list of additive, idempotent upgrades (`MIGRATION_COLUMNS` / `MIGRATION_INDEXES` in `db.py`) that
+  run on every start on both backends. v0.2 uses it to add `users.email`, `users.password_hash` and a
+  unique index on email to existing databases (tested on old-schema SQLite and Postgres databases).
+  This only handles adding nullable columns and indexes; renames, type changes or backfills need a
+  real tool (Alembic or numbered SQL files). Existing local SQLite data is not copied to Postgres
+  (there's no script); that is dev data only.
 - **Blocking DB calls on the event loop.** `POST /v1/chat` is async and calls the (sync) DB directly. On
   local SQLite that cost nothing; on Neon each call is a network round trip (a few ms within Singapore)
   during which the event loop is blocked. That's fine at test scale. Before real load, run the DB
@@ -131,8 +177,11 @@ confirm → chat) also worked.
 - OpenRouter's long-context price `overrides` (e.g. above 272k prompt tokens) are ignored. Safe while
   `MAX_INPUT_TOKENS` (32k) is far below them.
 - A model that returns an empty reply is still charged its real (small) cost.
-- Conversation history endpoints (list or reopen past chats) are not built; saved chats are v1.1 in
-  BLUEPRINT §8. Messages are stored server-side already because context and caching need them.
+- History: list and delete are built (`GET /v1/history`, `DELETE /v1/history/{id}`). Not built:
+  reopening a past conversation's messages (`GET /v1/history/{id}`), paging beyond `limit` (max 200),
+  search. Continuing an old conversation already works by sending its `conversation_id` to `/v1/chat`.
+- The `APP_NAME` default (sent to OpenRouter as `X-Title` for attribution) is still `campus-ai`. Set
+  `APP_NAME=Straight Answer` if the name should show on OpenRouter.
 - The ≤ 1-paisa prepaid sub-paisa credit isn't included in `balance_inr` (it shows whole paise).
 - Holds expire after 2 × `UPSTREAM_TIMEOUT_SECONDS` + 60 s, in case a process dies mid-call.
 - Single process only: in-memory rate limits and conversation locks. See README "Scaling". (Wallet

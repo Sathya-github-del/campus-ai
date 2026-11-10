@@ -1,6 +1,7 @@
 # campus-ai backend
 
-Backend for a pay-as-you-go AI study-chat Android app for Indian students (working name; not a brand).
+Backend for **Straight Answer**, a pay-as-you-go AI study-chat Android app for Indian students
+(`campus-ai` stays the internal repo/package name).
 Students top up a closed-loop rupee wallet (UPI, from ₹20) and pay per message on a Fast / Smart /
 Expert tier. Models are reached through OpenRouter. Product research and economics: `../BLUEPRINT.md`.
 Known gaps and launch blockers: [`NOTES.md`](NOTES.md).
@@ -26,14 +27,16 @@ from inside the emulator. Health check: `GET /healthz`.
   Nothing to install or run.
 - **`DATABASE_URL` set:** Postgres, e.g. Neon. Format
   `postgresql://USER:PASSWORD@HOST/DBNAME?sslmode=require` (Neon needs `sslmode=require`). Tables are
-  created on startup; there is no separate migration step. This is the production path, and the server
+  created on startup, and the few additive upgrades in `db.py` (`MIGRATION_COLUMNS`) are applied to an
+  existing database on startup too (v0.2 adds `users.email` and `users.password_hash`). This is the production path, and the server
   refuses to start on Render without it.
 
 The same code runs on both (`app/db.py`). Money-moving transactions lock the user's wallet row
 (`SELECT … FOR UPDATE` on Postgres; SQLite's `BEGIN IMMEDIATE` already locks the whole database), so
 parallel requests can't double-spend or lose an update on either backend. `PostgresDB.tx()` in
-`app/db.py` explains the choice. If your `.venv` predates Postgres support, run
-`.venv/bin/pip install -r requirements.txt` once (only needed if you set `DATABASE_URL`).
+`app/db.py` explains the choice. `run.sh` only installs requirements when it creates `.venv`, so
+after pulling a version that adds a dependency run `.venv/bin/pip install -r requirements.txt` once
+(v0.2 added `argon2-cffi` for passwords; Render installs it on its next build).
 
 ### Tests
 
@@ -51,8 +54,9 @@ every test a fresh database, and removes the container afterwards. To use an exi
 set `TEST_DATABASE_URL` to a **disposable** Postgres superuser URL (the tests create and drop
 databases on it; never point it at Neon production). It covers:
 
-- `tests/test_postgres.py`: the wallet / top-up / 402 / chat-charging tests from `test_api.py`, re-run
-  unchanged against Postgres, plus schema and isolation checks.
+- `tests/test_postgres.py`: the wallet / top-up / 402 / chat-charging tests from `test_api.py` and the
+  signup / login / history / account-deletion tests from `test_accounts.py`, re-run unchanged against
+  Postgres, plus schema, migration and isolation checks.
 - `tests/test_concurrency.py` (runs on both backends): lock tests prove each money operation waits for
   the wallet or top-up row lock; race tests start 16 threads at once and check exact end states (no
   overcommitted holds, no lost settle updates, a duplicate webhook credits once, the wallet cap holds),
@@ -95,15 +99,21 @@ system libraries or has to run the same image on another host.
 | `MAX_OUTPUT_TOKENS` | `5000` | Cost-check before using paid models (see `.env.example`). |
 | `PYTHON_VERSION` | already set to `3.13.5` by `render.yaml` | Add it yourself if you create the service by hand. |
 
-Optional, same meaning as in `.env.example`: `MODEL_FAST`, `MODEL_SMART`, `MODEL_EXPERT` (pins, e.g.
-the free models used for testing), `DB_POOL_SIZE` (default 10; Neon's free tier allows far more),
-`APP_URL`, `APP_NAME`, the rate limits and the tier bands. Don't set `DATABASE_PATH` or `RENDER`.
+Optional, same meaning as in `.env.example`: `MODEL_FAST`, `MODEL_SMART`, `MODEL_EXPERT` (pins),
+`DB_POOL_SIZE` (default 10; Neon's free tier allows far more), `APP_URL`, `APP_NAME`, the rate limits
+(including `LOGIN_LIMIT_PER_15MIN_PER_EMAIL` / `_PER_IP`) and the tier bands. Don't set `DATABASE_PATH`
+or `RENDER`.
+
+Current recommendation for the pins: set **only** `MODEL_FAST` (a free model is fine there) and leave
+`MODEL_SMART` / `MODEL_EXPERT` unset, so those tiers are chosen by live price inside their bands. If
+all three are pinned to free models, every tier's estimate in `GET /v1/models` reads ₹0.00, which
+looks broken to testers.
 
 > **Warning: a `DEV_MODE=true` + `PAYMENT_PROVIDER=mock` deployment is public free credit.** Anyone who
 > finds the URL can register, "pay" on the mock checkout page and spend *your* OpenRouter balance.
 > Razorpay is not implemented yet (NOTES.md §2), so this is the only mode that works today. Use it
-> only for closed testing: pin `MODEL_*` to free models and/or put a credit limit on the OpenRouter
-> key.
+> only for closed testing. With Smart and Expert on paid models, **put a credit limit on the
+> OpenRouter key**: free mock credit spent on Expert costs you real money.
 
 Free-tier behaviour to expect: the Render service sleeps after ~15 minutes without traffic and the
 next request takes up to about a minute to wake it (the app's timeouts should allow for that), and
@@ -114,7 +124,13 @@ connection before use, so stale connections after a suspend are replaced automat
 
 | Method & path | Auth | Request | Response |
 |---|---|---|---|
-| `POST /v1/auth/register` | – | `{}` (or no body) | `{"token"}` |
+| `POST /v1/auth/register` | – | `{}` (or no body) | `{"token"}` (anonymous account; kept for quick testing) |
+| `POST /v1/auth/signup` | – | `{"email", "password"}` (password 8–256 chars) | `{"token"}` |
+| `POST /v1/auth/login` | – | `{"email", "password"}` | `{"token"}` (signs out the account's previous token) |
+| `POST /v1/auth/forgot-password` | – | `{"email"}` | `{"message"}`, always the same text (**stub: no email is sent yet**) |
+| `GET /v1/history?limit=50` | Bearer | `limit` 1–200, default 50 | `{"conversations": [{"conversation_id", "first_question", "created_at", "updated_at", "questions", "cost_inr"}]}` |
+| `DELETE /v1/history/{conversation_id}` | Bearer | – | `204`, empty body |
+| `DELETE /v1/account` | Bearer | – | `204`, empty body. **Remaining balance is forfeited** (see below) |
 | `GET /v1/wallet` | Bearer | – | `{"balance_inr"}` |
 | `POST /v1/wallet/topup` | Bearer | `{"amount_inr"}` (≥ 20, ≤ 2000, max 2 decimals) | `{"checkout_url", "topup_id"}` |
 | `POST /v1/wallet/topup/confirm` | optional | `{"topup_id"}` | `{"balance_inr"}` (**dev mode only**, 404 otherwise) |
@@ -127,6 +143,26 @@ the normalised one is missing). The reply is then cut off mid-answer, so the app
 (e.g. "answer was cut short, ask to continue"). It is `false` for a normal finish and whenever the
 signal is missing or ambiguous. The student is still charged for the tokens that were generated.
 
+**Accounts.** Email and anonymous accounts use the same bearer tokens (random, only the SHA-256 is
+stored). Emails are trimmed and lower-cased; signup with an existing email is `409 email_taken`.
+Login failures are always `401 invalid_credentials` / "Incorrect email or password." whether or not the
+email exists. An account has one token at a time: logging in on a new device signs the old one out
+(its next request gets `401 unauthorized`). Passwords are hashed with argon2id.
+
+**History.** Conversations are listed most recently active first (`updated_at` descending).
+`first_question` is the conversation's first question, cut to 140 characters with a trailing `…`.
+`questions` counts the student's questions (1 = no follow-ups). `cost_inr` is the sum of what each
+answer was charged (the same figures `POST /v1/chat` returned as `cost_inr`). Timestamps are ISO 8601
+UTC, e.g. `2026-11-10T14:03:22Z`. There's no paging beyond `limit` yet. Deleting a conversation that
+doesn't exist **or belongs to someone else** returns `404 conversation_not_found` (same answer, so it
+doesn't reveal other users' conversation ids). Deleting history doesn't change the wallet. If an answer
+is still being generated in that conversation, the delete waits for it to finish and be charged.
+
+**Account deletion** removes the user, wallet, conversations, messages, top-ups and ledger rows. Any
+balance left in the wallet is **forfeited, not refunded**: credits are closed-loop and non-cashable
+(BLUEPRINT §5, §9), so there is no payout path, and none should be added. The app must say this before
+the student confirms (suggested copy in NOTES.md §3).
+
 Response bodies contain exactly these fields and nothing more (Kotlin serializers reject unknown keys
 by default). Server-only extras:
 
@@ -138,10 +174,12 @@ by default). Server-only extras:
 
 | Status | `error` | When |
 |---|---|---|
-| 400 | `invalid_amount`, `wallet_limit`, `invalid_image`, `empty_message`, `content_rejected`, `image_not_supported` | bad input |
-| 401 | `unauthorized` | missing/unknown token |
+| 400 | `invalid_amount`, `wallet_limit`, `invalid_image`, `empty_message`, `content_rejected`, `image_not_supported`, `invalid_email`, `weak_password` | bad input |
+| 401 | `unauthorized` | missing/unknown token (also after logging in elsewhere or deleting the account) |
+| 401 | `invalid_credentials` | login: wrong email or password (never says which) |
 | 402 | `insufficient_balance` | wallet can't cover one message on that tier; extra fields `balance_inr`, `required_inr`, `tier` |
-| 404 | `conversation_not_found`, `topup_not_found`, `not_found` | |
+| 404 | `conversation_not_found`, `topup_not_found`, `not_found` | `conversation_not_found` also for another user's conversation |
+| 409 | `email_taken` | signup with an email that already has an account |
 | 409 | `amount_mismatch`, `topup_not_pending` | webhook/confirm problems |
 | 413 | `message_too_long`, `image_too_large`, `conversation_too_long` | start a new conversation for the last one |
 | 422 | `invalid_request` | malformed JSON / wrong types / unknown tier |
@@ -235,7 +273,9 @@ calls `POST /v1/wallet/topup/confirm`) → `GET /v1/wallet`.
 ### Abuse limits and content policy
 
 - Per token, in memory, sliding window: 60 requests/min overall, 12 chats/min
-  (`RATE_LIMIT_PER_MINUTE`, `CHAT_RATE_LIMIT_PER_MINUTE`). Registrations: 20/hour per IP. Behind a
+  (`RATE_LIMIT_PER_MINUTE`, `CHAT_RATE_LIMIT_PER_MINUTE`). Registrations and signups: 20/hour per IP
+  (shared). Forgot-password: 20/hour per IP. Logins: 10 per 15 min per email and 50 per 15 min per IP,
+  counting successful ones. Behind a
   reverse proxy, uvicorn's `--proxy-headers` (set in `run.sh`) supplies the real client IP when the
   proxy is listed in `FORWARDED_ALLOW_IPS`.
 - Content policy: OpenRouter and the model providers enforce their own usage policies. A blocked
@@ -248,13 +288,14 @@ calls `POST /v1/wallet/topup/confirm`) → `GET /v1/wallet`.
 ```
 app/
   api.py         routes, contract models, auth, rate limits, app factory
+  accounts.py    user creation, password hashing, history queries, account deletion
   chat.py        request building (prompt caching), pre-authorisation, metering, persistence
   catalog.py     OpenRouter model list -> Fast/Smart/Expert
   wallet.py      balance, holds, charges, idempotent top-up credit
   money.py       paise / unit math (Decimal + int only)
   payments.py    PaymentProvider interface, mock, Razorpay stub
   openrouter.py  async HTTP client
-  db.py          SQLite + Postgres backends (schema in both dialects, locking notes)
+  db.py          SQLite + Postgres backends (schema in both dialects, additive migrations, locking notes)
   config.py      env-var settings and validation
   errors.py      single error shape
   ratelimit.py   sliding-window limiter

@@ -28,10 +28,14 @@ from typing import Any, Iterator, Protocol
 log = logging.getLogger(__name__)
 
 SCHEMA = """
+-- email / password_hash are NULL for anonymous (/v1/auth/register) users. email is stored normalised
+-- (trimmed, lower-case); the unique index on it is created in MIGRATIONS so it also reaches old databases.
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   token_hash TEXT NOT NULL UNIQUE,
-  created_at REAL NOT NULL);
+  created_at REAL NOT NULL,
+  email TEXT,
+  password_hash TEXT);
 
 -- Closed-loop, non-transferable, non-cashable credit. There is deliberately no API that moves balance
 -- between users or pays it out. balance_paise can never be negative (CHECK).
@@ -112,10 +116,14 @@ CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
 #     reused).
 #   - SQLite's dynamic typing is replaced by the explicit types above.
 SCHEMA_POSTGRES = """
+-- email / password_hash are NULL for anonymous (/v1/auth/register) users. email is stored normalised
+-- (trimmed, lower-case); the unique index on it is created in MIGRATIONS so it also reaches old databases.
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   token_hash TEXT NOT NULL UNIQUE,
-  created_at DOUBLE PRECISION NOT NULL);
+  created_at DOUBLE PRECISION NOT NULL,
+  email TEXT,
+  password_hash TEXT);
 
 -- Closed-loop, non-transferable, non-cashable credit. There is deliberately no API that moves balance
 -- between users or pays it out. balance_paise can never be negative (CHECK).
@@ -186,6 +194,19 @@ CREATE INDEX IF NOT EXISTS messages_conv ON messages(conversation_id, id);
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
 """
 
+# Additive, idempotent upgrades for databases created by an older version: CREATE TABLE IF NOT EXISTS
+# never alters an existing table. Run on every start, after the CREATE statements, on both backends.
+# Only ever ADD here (nullable columns, indexes); anything else needs a real migration tool (NOTES.md §5a).
+#   v0.2: users.email + users.password_hash (email/password accounts) and a unique index on email
+#         (NULLs don't collide, so any number of anonymous users can have no email).
+MIGRATION_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("users", "email", "TEXT"),
+    ("users", "password_hash", "TEXT"),
+)
+MIGRATION_INDEXES: tuple[str, ...] = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email)",
+)
+
 # Arbitrary constant. Serializes schema creation when several instances boot at once: concurrent
 # CREATE TABLE IF NOT EXISTS can otherwise fail with a unique violation in pg_type.
 _SCHEMA_LOCK_KEY = 0x63616D707573
@@ -220,11 +241,22 @@ class SQLiteDB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         if self.path != ":memory:":
             try:
                 Path(self.path).chmod(0o600)
             except OSError:
                 pass
+
+    def _migrate(self) -> None:
+        # BEGIN IMMEDIATE: two processes starting together can't both add the same column.
+        with self.tx() as c:
+            for table, col, typ in MIGRATION_COLUMNS:
+                if col not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
+                    log.info("migrating SQLite schema: adding %s.%s", table, col)
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+            for sql in MIGRATION_INDEXES:
+                c.execute(sql)
 
     def q(self, sql: str, args=()) -> list[dict]:
         with self.lock:
@@ -347,9 +379,25 @@ class PostgresDB:
                 with conn.transaction():
                     conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK_KEY,))
                     conn.execute(SCHEMA_POSTGRES)
+                    self._migrate(conn)
         except BaseException:
             self.pool.close()
             raise
+
+    @staticmethod
+    def _migrate(conn) -> None:
+        """Runs inside the schema transaction, under the advisory lock. Checks the catalog first instead
+        of `ADD COLUMN IF NOT EXISTS`, because ALTER TABLE takes an ACCESS EXCLUSIVE lock on the table
+        even when there is nothing to add, which would briefly block every request during a redeploy."""
+        for table, col, typ in MIGRATION_COLUMNS:
+            exists = conn.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "
+                "AND table_name = %s AND column_name = %s", (table, col)).fetchone()
+            if not exists:
+                log.info("migrating Postgres schema: adding %s.%s", table, col)
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        for sql in MIGRATION_INDEXES:
+            conn.execute(sql)
 
     def q(self, sql: str, args=()) -> list[dict]:
         with self.pool.connection() as conn:
@@ -382,8 +430,10 @@ class PostgresDB:
           serialization is as strong as SQLite's global write lock for correctness, without making
           each user wait for every other user.
         - Lock order is always conversation row (chat) or top-up row (payment), then the wallet row,
-          then hold rows. Expired-hold cleanup uses SKIP LOCKED and never waits. With no ordering
-          cycles these paths cannot deadlock each other.
+          then hold rows. Account deletion (accounts.delete_account) follows the same order: all of the
+          user's conversation rows, then their top-up rows, then the wallet row. Expired-hold cleanup
+          uses SKIP LOCKED and never waits. With no ordering cycles these paths cannot deadlock each
+          other.
 
         SERIALIZABLE was not chosen. It is also safe, but it reports conflicts as serialization
         failures that the caller must retry, and this context-manager API cannot re-run its body.
@@ -406,6 +456,19 @@ class PostgresDB:
 
 
 Database = SQLiteDB | PostgresDB
+
+
+def integrity_errors() -> tuple[type[BaseException], ...]:
+    """Constraint-violation exception types for whichever backends are importable (e.g. to turn a
+    unique-index race into a clean 409)."""
+    errors: list[type[BaseException]] = [sqlite3.IntegrityError]
+    try:
+        import psycopg
+
+        errors.append(psycopg.IntegrityError)
+    except ImportError:
+        pass
+    return tuple(errors)
 
 
 def open_db(database_url: str = "", database_path: Path | str = "data/campus_ai.db",
