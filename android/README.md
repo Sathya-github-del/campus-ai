@@ -58,11 +58,30 @@ components (dialogs, menus, text fields) inherit the identity. Dark only is a de
 reads best lit on a dark panel, and one tuned scheme beats two half-tuned ones. The system bars are forced
 to light icons to match.
 
+**Answers read like a textbook page, not source code.** Models answer in Markdown and LaTeX
+(`**bold**`, `- lists`, `\frac{a}{b}`, `\[ … \]`), so the answer card renders both instead of showing the
+raw syntax (see [Answer rendering](#answer-rendering-markdown-and-maths)). It stays in the night-meter
+voice: paper-cream body text, serif headings like the rest of the app, `### Step 1` labels and list numbers
+in lit amber, bullets drawn as small lit meter segments, code in the meter's dark display well, tables
+with an amber header row, a dashed receipt rule for `---`, and display maths centred with real stacked
+fractions and radicals. A `\boxed{}` final answer gets an amber frame, like a fare landing.
+
+**Cut off, said plainly.** When the server reports `truncated: true`, the card shows a **Cut off** strip
+under the answer, styled like the **Follow up** button (tangerine outline, follow-up icon) because that is
+the fix: tapping **Continue** opens the follow-up box with "Please continue from where you stopped." ready
+to send. Not an error banner: nothing failed, the answer just ran out of room.
+
+**The rate follows the question.** The "about ₹X" on the Ask button and the tier meters tick up as a
+long question is typed or pasted (legend switches from "per ask" to "this ask"); the follow-up meter also
+counts the earlier parts it re-sends. See [Live estimate](#live-estimate).
+
 **Where things live:** `ui/Theme.kt` (palette, type, shapes), `ui/Meter.kt` (segment display, ticking
 readout, meter-running, heat bars, perforation, balance meter), `ui/Components.kt` (tier cards, Ask button,
 banners, Expert dialog), `ui/HomeScreen.kt`, `ui/AnswerScreen.kt`, `ui/AskScreen.kt` (switches home ↔
 answer, back handling), `ui/AskViewModel.kt` (questions as threads that only grow on explicit follow-up),
-`ui/WalletScreen.kt`, `ui/WelcomeScreen.kt`, `ui/CameraScreen.kt`, `core/Examples.kt`, `core/MeterText.kt`.
+`ui/WalletScreen.kt`, `ui/WelcomeScreen.kt`, `ui/CameraScreen.kt`, `core/Examples.kt`, `core/MeterText.kt`,
+`ui/AnswerText.kt` (answer rendering), `core/Markdown.kt` + `core/Latex.kt` (parsing),
+`core/CostEstimate.kt` (live estimate).
 
 ## Build & run
 
@@ -140,11 +159,59 @@ TopUpFlow.topUp(amount)
 | `POST /v1/wallet/topup` | Bearer | `{amount_inr}` → `{checkout_url, topup_id}` |
 | `POST /v1/wallet/topup/confirm` | Bearer sent (contract doesn't require it) | `{topup_id}` → `{balance_inr}` (dev mock only) |
 | `GET /v1/models` | Bearer if registered | → `{tiers: [{tier, label, est_cost_per_message_inr}]}` |
-| `POST /v1/chat` | Bearer | `{tier, message, conversation_id, image_base64}` → `{reply, conversation_id, cost_inr, wallet_balance_inr}`; **402** = balance too low |
+| `POST /v1/chat` | Bearer | `{tier, message, conversation_id, image_base64}` → `{reply, conversation_id, cost_inr, wallet_balance_inr, truncated}`; **402** = balance too low |
 
 Requests send explicit `null`s (`"conversation_id": null`). Responses are parsed leniently (unknown
 fields ignored, integer or decimal amounts). Errors read FastAPI-style `{"detail": "..."}`.
-`image_base64` is always `null` in v1 (see gaps).
+`image_base64` is always `null` in v1 (see gaps). `truncated` (the reply stopped at the model's length
+limit) is new and optional on the client: absent or `null` reads as `false`, so older backends still work.
+
+## Answer rendering: Markdown and maths
+
+**The problem.** Answers were a plain `Text()`, so every structured answer (step-by-step maths, code,
+lists) showed `**`, `\frac{…}{…}`, `\times`, `\[` and braces as literal characters, even though the
+system prompt asks for plain-text maths. Models write LaTeX anyway, in every delimiter style.
+
+**What was considered.**
+
+| Option | Why not (or why) |
+|---|---|
+| Markwon (+ JLatexMath plugin) | View-based (`TextView`), not Compose; effectively unmaintained; JLatexMath adds ~1 MB+ and its own fonts. |
+| `multiplatform-markdown-renderer` / `compose-richtext` | Real Compose Markdown, but no maths at all, extra parser dependency, and their default typography fights the theme (we'd restyle every element anyway). |
+| WebView + KaTeX/MathJax | Best fidelity, but a WebView per answer card (memory on low-end phones, async height jumps inside a scrolling card, text selection/copy split across two worlds), ~300 KB–1 MB of bundled JS and fonts, and a web surface to style twice. |
+| **Small custom parser + native Compose layout (chosen)** | Covers what models actually emit, zero dependencies and ~0 APK cost, every element styled with the app's own tokens, unit-tested on the JVM with real answers, renders synchronously so nothing jumps. |
+
+**How it works.** `core/Markdown.kt` parses the answer into blocks (paragraphs, `#` headings, `-`/`*`/`+`
+and numbered lists with nesting, `---` rules, `>` quotes, fenced code, pipe tables) and inline spans
+(`**bold**`, `*italic*`, `***both***`, `` `code` ``, `~~strike~~`, `[links](https://…)`, and `x^2` in prose).
+Maths is found in every form models use: `\( … \)`, `\[ … \]`, `$$ … $$`, `$ … $` (only when the content
+looks like maths, so "₹5 or $10" stays text), a bare `\begin{aligned}…\end{aligned}`, a `[ x = \frac… ]` line
+that lost its backslashes, and stray commands in prose (`3 \times 4`). `core/Latex.kt` parses the LaTeX
+into a small tree (rows, fractions, scripts, radicals, boxes, accents, matrices/cases/aligned).
+
+* **Display maths** (`\[ \]`, `$$`) is laid out in 2-D in Compose (`ui/AnswerText.kt`): stacked
+  fractions with a rule, nested fractions shrinking, a drawn radical sign over the whole radicand (with an
+  index for `\sqrt[3]`), `aligned` lines lined up on the `=`, matrices with drawn brackets, `cases` with a
+  drawn brace, `\boxed{}` in an amber frame. Variables are italic, numbers and `sin`/`log` upright,
+  operators spaced. Wide formulas scroll sideways inside the card instead of wrapping badly.
+* **Inline maths** stays in the line as styled text: real raised/lowered scripts (`x²`, `v₀`), fractions
+  linearised with brackets only where needed (`(−b ± √(b² − 4ac))/(2a)`, `½`), symbols as Unicode
+  (`× · ÷ ± ≈ ≠ ≤ ≥ → ⇒ ∞ θ π Δ ∑ ∫ ℝ °`).
+* **Copy** puts clean readable text on the clipboard (`Markdown.plainText`): no `**`, maths as Unicode
+  (`x = (−3 ± 5)/4`, `g = 9.8 m/s²`), so it pastes sensibly into WhatsApp or notes.
+* **Never raw source:** unknown commands degrade to their name without the backslash, stray braces are
+  dropped, and parse errors can't throw. Tests assert no `\`, `{`, `}`, `**` or `$` survive in the two
+  real-world answers that surfaced the bug.
+
+**Limits (honest list).** Not a TeX engine: no `\def`/macros, `\overbrace` labels, `\xrightarrow`,
+chemistry (`\ce{}`), commutative diagrams, or precise TeX spacing and font metrics. Matrix cells are
+centred per column but row heights aren't shared across columns for tall entries. Superscripts nested
+inside superscripts use Unicode characters (`e^(−x²/2)`), not a third level of raise. Inline fractions are
+linear (`a/b`), never stacked, to keep line height steady. Maths uses the system serif; on phones whose
+serif is the same as the sans (seen on the ColorOS test phone) it simply reads as clean sans maths.
+Monospace code likewise depends on the system monospace font. If answers ever need research-grade maths,
+the WebView + KaTeX route above is the upgrade path, ideally only for blocks this parser flags as
+unsupported.
 
 ## Decisions & assumptions
 
@@ -167,6 +234,17 @@ fields ignored, integer or decimal amounts). Errors read FastAPI-style `{"detail
   option (diagrams, handwriting).
 * **On 401 the client re-registers and retries once.** That's convenient when a dev backend resets.
   In production it would mean a fresh ₹0 wallet. See account recovery below.
+* <a id="live-estimate"></a>**Live estimate.** `GET /v1/models` gives one flat per-message figure per tier,
+  which the backend computes for a typical message of 300 input tokens (mostly its own ~265-token system
+  prompt) and 400 output tokens. The client scales it to the question being typed (`core/CostEstimate.kt`):
+  input tokens = system-prompt overhead + the question (UTF-8 bytes / 3, the server's own rough count, so
+  Hindi isn't undercounted) + for follow-ups the earlier questions and answers the server re-sends. Short
+  questions show the server's figure exactly (it's the floor); a 2,000-character paste shows about 1.3x; an
+  8,000-character one about 2.4x. Since only the flat figure is known, the input/output price split is
+  assumed: output tokens cost about 4x input tokens (typical for the routed models). The answer's length is
+  unknown before sending, so output stays at the typical 400. The figure is rounded to the paisa so the meter
+  ticks only when the shown amount changes. The pre-send "not enough balance" check still uses the flat
+  figure, so this change can't newly block a send. The exact charge still lands with the answer.
 * **Top-up range ₹20–₹2,000.** The minimum is from the blueprint. The maximum keeps the closed-loop wallet
   small and stays under the ₹2,000 UPI MDR threshold. The backend should enforce the same limits.
 
@@ -179,7 +257,6 @@ fields ignored, integer or decimal amounts). Errors read FastAPI-style `{"detail
   seven-segment "?" in the new identity; the launcher label is still "StudyApp", which now contradicts the
   general-purpose positioning and should change with the brand).
 * **No saved history.** "This session" answers live only in memory until the app process dies (history is v1.1 per the blueprint).
-* **Answers render as plain text.** Markdown and math (LaTeX) rendering isn't done yet. Answers are selectable and have a Copy button.
 * **No streaming.** `/v1/chat` returns the whole reply at once, so while waiting the fare meter shows a "meter running"
   chase rather than a live count. If the backend ever streams, the readout can tick live as tokens arrive.
 * **The Play-services OCR download hasn't been verified end to end.** On the dev emulator (no Google account)
@@ -187,14 +264,26 @@ fields ignored, integer or decimal amounts). Errors read FastAPI-style `{"detail
   message. With the *bundled* model, the same code read a photographed question into the input correctly.
   Check on a real phone before launch.
 * **OCR is Latin script only.** Hindi and other Devanagari text needs the ML Kit Devanagari model.
-* **The cost estimate comes from the server's per-message figure.** It doesn't grow with conversation length. The UI
-  says long chats cost more, and the exact cost is shown after each answer.
+* **The live estimate is an approximation** (see [Live estimate](#live-estimate)). For real accuracy the backend
+  should also return per-token prices per tier in `GET /v1/models` (e.g. `prompt_inr_per_mtok`,
+  `completion_inr_per_mtok`, plus its system-prompt token count); then the client can drop the assumed 4:1
+  output:input ratio and the hard-coded 300/400/265 token baselines, which today must be kept in step with
+  `EST_PROMPT_TOKENS` / `EST_COMPLETION_TOKENS` and the system prompt in the backend by hand.
+* **Answer rendering limits** are listed under [Answer rendering](#answer-rendering-markdown-and-maths).
 * No instrumented/UI tests, release signing config, Play listing, privacy policy, or crash reporting yet.
 * Wallet T&C copy (non-transferable, non-withdrawable) is a draft, pending the RBI/PPI check in blueprint §9.1.
 
 ## Tests
 
-Last run: 53 JVM tests, 0 failures (`./build.sh assembleDebug testDebugUnitTest`).
+Last run: 80 JVM tests, 0 failures (`./build.sh assembleDebug testDebugUnitTest`).
+
+Answer rendering, the cut-off strip and the live estimate were checked on a real phone (ColorOS, 1080×2400)
+against a throwaway mock of the contract serving the two real-world answers (one with `truncated: true`)
+and a formatting sampler (lists, table, code, aligned, matrix, cases, `\sqrt[3]`, `\boxed`). That run caught
+two things JVM tests can't: Android's ICU regex engine rejects an unescaped literal `}`/`]` that the JVM
+accepts (all patterns now escape them), and a Compose layout may measure each child only once (the table
+grid sizes from intrinsics instead). Re-check on device after touching `core/Markdown.kt`/`core/Latex.kt`
+regexes or `ui/AnswerText.kt` layouts.
 
 The redesign was also walked through on an emulator (API 37, Pixel 6 size) against a throwaway mock of the
 contract: welcome → register → home with ₹0 meter → Add fare ₹20 (balance counts up) → ask (meter running →
@@ -211,5 +300,14 @@ tier → confirmation dialog → answer → home shows the session receipt → c
   (same conversation id, running total), new questions starting fresh, 402 → add-fare state with the question given back
   (for new questions and follow-ups), the balance pre-check, Expert confirmation for both, examples and camera text
   filling the right box, and back from an answer clearing transient state.
+* `core/MarkdownTest` and `core/LatexTest` cover every block and inline form, all maths delimiter styles,
+  emphasis false positives (`2 * 3 * 4`, `snake_case`, `$5 and $10`), LaTeX → Unicode for operators,
+  scripts, fractions (brackets only when needed), radicals, units, environments, "never a backslash or brace"
+  on malformed input, and the two real-world answers from the bug report (`core/RealAnswers.kt`: a quadratic
+  step-by-step solution and a projectile-motion problem) end to end.
+* `core/CostEstimateTest` covers the live estimate (short = server figure, longer = visibly more, follow-up
+  history, Devanagari token count, sub-paisa rates); `ui/AskViewModelTest` checks it follows typing, tier
+  switches and the open thread, plus `truncated` → Cut off → Continue pre-filling the follow-up (without
+  overwriting typed text). `data/ApiClientTest` checks `truncated` parses and defaults to `false` when absent or `null`.
 * `core/*Test` covers ₹ formatting, meter readout text (leading unlit cells, sub-paisa), tier mapping, top-up validation,
   example rotation, OCR cleanup and friendly errors.
