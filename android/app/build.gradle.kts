@@ -7,14 +7,14 @@ plugins {
 // Backend base URL. Debug defaults to the host machine as seen from the Android emulator.
 // Override per build: ./build.sh assembleDebug -PapiBaseUrl=http://192.168.1.20:8000
 val apiBaseUrl: String = (project.findProperty("apiBaseUrl") as String?) ?: "http://10.0.2.2:8000"
-val releaseApiBaseUrl: String = (project.findProperty("releaseApiBaseUrl") as String?) ?: "https://api.straightanswer.invalid"
+val releaseApiBaseUrl: String = (project.findProperty("releaseApiBaseUrl") as String?) ?: "https://api.quatrioai.invalid"
 
 android {
-    namespace = "dev.straightanswer.app"
+    namespace = "dev.quatrioai.app"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "dev.straightanswer.app"
+        applicationId = "dev.quatrioai.app"
         // minSdk 26 (Android 8.0): ~97%+ of active Indian Android devices in 2026, and it gives us
         // adaptive icons (no raster launcher fallbacks), java.time and java.util.Base64 natively.
         // Going lower buys almost no real users: current AndroidX/Compose already require 23+.

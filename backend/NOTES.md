@@ -1,4 +1,4 @@
-# Known gaps and decisions to make (backend v0.2, app name: Straight Answer)
+# Known gaps and decisions to make (backend v0.2, app name: QUATRIO AI)
 
 Ordered by how much they matter before real money moves.
 
@@ -93,7 +93,7 @@ the same token mechanism (`users.token_hash`), so the auth check didn't change.
 **Suggested confirmation copy for "Delete account" in the app** (balance is forfeited; there is no
 payout mechanism and there must not be one, BLUEPRINT §5, §9):
 
-> Delete your Straight Answer account? This permanently deletes your account, all your conversations
+> Delete your QUATRIO AI account? This permanently deletes your account, all your conversations
 > and your wallet. Your remaining balance of ₹{balance} will be lost. It can't be refunded or moved to
 > another account. This can't be undone.
 
@@ -181,7 +181,7 @@ confirm → chat) also worked.
   reopening a past conversation's messages (`GET /v1/history/{id}`), paging beyond `limit` (max 200),
   search. Continuing an old conversation already works by sending its `conversation_id` to `/v1/chat`.
 - The `APP_NAME` default (sent to OpenRouter as `X-Title` for attribution) is still `campus-ai`. Set
-  `APP_NAME=Straight Answer` if the name should show on OpenRouter.
+  `APP_NAME=QUATRIO AI` if the name should show on OpenRouter.
 - The ≤ 1-paisa prepaid sub-paisa credit isn't included in `balance_inr` (it shows whole paise).
 - Holds expire after 2 × `UPSTREAM_TIMEOUT_SECONDS` + 60 s, in case a process dies mid-call.
 - Single process only: in-memory rate limits and conversation locks. See README "Scaling". (Wallet

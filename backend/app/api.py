@@ -173,7 +173,7 @@ def create_app(settings: Settings | None = None, *, client=None, provider: Payme
         if owns_db:
             db.close()
 
-    app = FastAPI(title="Straight Answer backend (campus-ai)", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="QUATRIO AI backend (campus-ai)", version="0.2.0", lifespan=lifespan)
     install_handlers(app)
     app.state.settings, app.state.db, app.state.wallet, app.state.catalog = settings, db, wallet, catalog
 
