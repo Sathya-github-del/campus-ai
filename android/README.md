@@ -1,8 +1,11 @@
-# StudyApp — Android client
+# Straight Answer — Android client
 
-> **StudyApp** / `dev.studyapp.app` is a placeholder name and package. Rename before release
-> (applicationId + namespace in `app/build.gradle.kts`, the Kotlin package, `app_name`). The in-app UI
-> deliberately shows no product name, so only the launcher label (`app_name`) still says "StudyApp".
+> **Straight Answer**, applicationId and Kotlin package `dev.straightanswer.app` (renamed from the
+> `dev.studyapp.app` placeholder: namespace, applicationId, every package/import, `app_name`, the
+> `Application` class `StraightAnswerApp`, theme `Theme.StraightAnswer`, `rootProject.name`, logcat tag
+> `StraightAnswer`). The in-app UI still deliberately shows no product name; the launcher label does.
+> A changed applicationId is a **new app** to Android: an installed `dev.studyapp.app` build is not
+> upgraded in place, and its guest token (and wallet) stays with the old app.
 
 Pay-per-answer AI for anyone with a quick question: students, professionals checking something,
 people drafting a message, debugging code, or just curious. Top up from ₹20 with UPI and pay for each
@@ -75,13 +78,31 @@ to send. Not an error banner: nothing failed, the answer just ran out of room.
 long question is typed or pasted (legend switches from "per ask" to "this ask"); the follow-up meter also
 counts the earlier parts it re-sends. See [Live estimate](#live-estimate).
 
+**Accounts without a wall.** Signing up is optional and never stands between a new user and their first
+question (for a pay-per-use tool, a signup wall is where most installs end). The welcome screen's main
+button is still **Start asking**, which creates a guest wallet on this phone (`POST /v1/auth/register`);
+under it, **Have an account? Log in or sign up**. The account screen is one screen with a two-key switch
+(**Create account** / **Log in**, styled like the tier cards), a serif headline ("Keep your balance safe." /
+"Welcome back."), email and password fields with a visible eye toggle, and **Skip for now, use without an
+account** below an "or" rule. Guests get a small lit pilot dot on the profile key in the home top bar, a
+quiet nudge rather than a nag. Everything stays in the night-meter palette: tangerine focus rings and
+primary buttons, vermilion only for destructive actions, notices in the meter-panel style.
+
+**Profile is the receipt drawer.** The profile key (round bezel button beside the balance meter) opens:
+who you are and your balance on a meter; your saved history as the same compact fare receipts home uses
+for "This session" (question, tier tag with heat bars, parts and date, fare on a small meter) with a trash
+key per row; the draft Terms and Privacy pages; **Log out**; and **Delete account** in vermilion.
+
 **Where things live:** `ui/Theme.kt` (palette, type, shapes), `ui/Meter.kt` (segment display, ticking
 readout, meter-running, heat bars, perforation, balance meter), `ui/Components.kt` (tier cards, Ask button,
 banners, Expert dialog), `ui/HomeScreen.kt`, `ui/AnswerScreen.kt`, `ui/AskScreen.kt` (switches home ↔
 answer, back handling), `ui/AskViewModel.kt` (questions as threads that only grow on explicit follow-up),
 `ui/WalletScreen.kt`, `ui/WelcomeScreen.kt`, `ui/CameraScreen.kt`, `core/Examples.kt`, `core/MeterText.kt`,
 `ui/AnswerText.kt` (answer rendering), `core/Markdown.kt` + `core/Latex.kt` (parsing),
-`core/CostEstimate.kt` (live estimate).
+`core/CostEstimate.kt` (live estimate), `ui/AuthScreen.kt` + `ui/AuthViewModel.kt` + `core/AuthText.kt`
+(signup/login), `ui/ProfileScreen.kt` + `ui/ProfileViewModel.kt` (profile, history, log out, delete
+account), `data/History.kt` (lenient history parsing), `ui/LegalScreen.kt` + `core/LegalText.kt` (draft
+legal text).
 
 ## Build & run
 
@@ -99,7 +120,7 @@ writes `local.properties`, and creates a project-local `debug.keystore` if missi
 | Build | Default | Override |
 |---|---|---|
 | debug | `http://10.0.2.2:8000` (host machine, seen from the emulator) | `./build.sh assembleDebug -PapiBaseUrl=http://192.168.1.20:8000` |
-| release | `https://api.studyapp.invalid` (placeholder) | `-PreleaseApiBaseUrl=https://…` |
+| release | `https://api.straightanswer.invalid` (placeholder) | `-PreleaseApiBaseUrl=https://…` |
 
 Physical phone over USB without LAN setup: `adb reverse tcp:8000 tcp:8000` and build with
 `-PapiBaseUrl=http://127.0.0.1:8000`. Use the same trick if the **emulator** can't reach `10.0.2.2`.
@@ -122,7 +143,11 @@ release is HTTPS-only.
 | Camera → on-device OCR (CameraX + ML Kit) → text appended to whichever box is in use (home question or follow-up) for editing. "Choose a photo instead" (system photo picker, no permission) also works when the camera is denied. Nothing is uploaded | `ui/CameraScreen.kt`, `core/OcrText.kt` |
 | Add fare (wallet): big balance meter, ₹20/₹50/₹100/₹200 fare keys + custom amount (whole rupees, ₹20–₹2,000), "balance after" readout, "≈ N Fast / Smart / Expert answers", top-up | `ui/WalletScreen.kt`, `core/TopUpAmount.kt` |
 | Top-up via a payment abstraction (dev: backend mock confirm) | `payments/Payments.kt` |
-| Token in DataStore; auto re-register + retry once on 401 | `data/SessionStore.kt`, `data/Backend.kt` |
+| Token (+ account email) in DataStore. Guests: auto re-register + retry once on 401. Accounts: 401 signs out to the login screen ("Your session ended") instead of silently becoming a ₹0 guest | `data/SessionStore.kt`, `data/Backend.kt` |
+| Account screen: Create account / Log in switch, email + password with show/hide toggle, client-side checks (email shape, non-empty password) before any request, 409 → "There's already an account with this email. Log in instead?" with a one-tap **Log in** (email and password kept), login failures always the same generic message, **Forgot password?** dialog that always ends on the generic "if an account exists…" text, Terms/Privacy links, and **Skip for now** (guest) | `ui/AuthScreen.kt`, `ui/AuthViewModel.kt`, `core/AuthText.kt` |
+| Profile: identity + balance meter, full saved history from `GET /v1/history` as fare receipts with per-row delete (confirmation dialog: "Delete this question? … The fare already paid isn't refunded."), retry on load failure, Terms/Privacy, **Log out** (confirmed; accounts only), **Delete account** (dialog lists what is lost, shows the balance being forfeited on a vermilion meter, and only arms after typing `DELETE`) | `ui/ProfileScreen.kt`, `ui/ProfileViewModel.kt` |
+| Terms of Service and Privacy Policy, clearly marked **Draft · pending legal review**, linked from the account screen and Profile | `ui/LegalScreen.kt`, `core/LegalText.kt` |
+| Launcher icon: adaptive (espresso-black layer + amber ₹ foreground, monochrome for themed icons) plus legacy square/round PNGs at every density | `res/mipmap-*` (see [App icon](#app-icon)) |
 
 Every new question starts with `conversation_id: null`; only an explicit follow-up reuses the
 answer's `conversation_id`. The follow-up box and the running total say that follow-ups cost a bit
@@ -148,7 +173,7 @@ TopUpFlow.topUp(amount)
   The backend must credit the wallet from Razorpay's **webhook** (never from the client's word), and
   `TopUpFlow` then re-fetches the balance. Since the webhook can lag, the gateway may need to poll
   `GET /v1/wallet` briefly. Razorpay Checkout needs an `Activity`, so that gateway will also need an
-  activity-result hook. Select it in `StudyApp.kt`.
+  activity-result hook. Select it in `StraightAnswerApp.kt`.
 
 ## Backend API contract (what the client calls)
 
@@ -160,10 +185,25 @@ TopUpFlow.topUp(amount)
 | `POST /v1/wallet/topup/confirm` | Bearer sent (contract doesn't require it) | `{topup_id}` → `{balance_inr}` (dev mock only) |
 | `GET /v1/models` | Bearer if registered | → `{tiers: [{tier, label, est_cost_per_message_inr}]}` |
 | `POST /v1/chat` | Bearer | `{tier, message, conversation_id, image_base64}` → `{reply, conversation_id, cost_inr, wallet_balance_inr, truncated}`; **402** = balance too low |
+| `POST /v1/auth/signup` | none | `{email, password}` → `{token}`; **409** = email already has an account |
+| `POST /v1/auth/login` | none | `{email, password}` → `{token}`; any failure shown as one generic message |
+| `POST /v1/auth/forgot-password` | none | `{email}` → generic success (body ignored) |
+| `GET /v1/history` | Bearer | → `{items: [{conversation_id, first_question, created_at, parts, total_cost_inr, tier}]}` (parsed leniently, see below) |
+| `DELETE /v1/history/{conversation_id}` | Bearer | → 200 (404 is treated as "already gone") |
+| `DELETE /v1/account` | Bearer | → 200, then the app signs out locally |
 
 Requests send explicit `null`s (`"conversation_id": null`). Responses are parsed leniently (unknown
 fields ignored, integer or decimal amounts). Errors read FastAPI-style `{"detail": "..."}`.
-`image_base64` is always `null` in v1 (see gaps). `truncated` (the reply stopped at the model's length
+`image_base64` is always `null` in v1 (see gaps).
+
+**History is parsed by hand** (`data/History.kt`), because the endpoint is being built in parallel and
+"field names may differ slightly". Each field is read under its contract name, then likely aliases
+(`id`/`conversationId`, `question`/`title`, `createdAt`/`timestamp`, `message_count`/`turns` or a list whose
+size is the count, `cost_inr`/`total_inr`), numbers may be JSON numbers or strings, dates ISO-8601 with or
+without a zone (no zone = UTC) or epoch seconds/milliseconds, and the list may be under `items`, `history`,
+`conversations`, `data`, `results` or be the whole body. Items without any id are skipped (they couldn't be
+deleted); unknown tier keys show without a tier tag. Unknown fields and skipped items are logged once per
+load (logcat tag `StraightAnswer`), never fatal. Only a non-JSON body or one with no list is an error. `truncated` (the reply stopped at the model's length
 limit) is new and optional on the client: absent or `null` reads as `false`, so older backends still work.
 
 ## Answer rendering: Markdown and maths
@@ -213,15 +253,62 @@ Monospace code likewise depends on the system monospace font. If answers ever ne
 the WebView + KaTeX route above is the upgrade path, ideally only for blocks this parser flags as
 unsupported.
 
+## App icon
+
+Generated from the 1024px artwork (`icon-v2-1024.png` flat, `icon-v2-fg-1024.png` foreground) with a small
+Pillow script, at the standard densities: adaptive foreground 108dp (108/162/216/324/432 px for
+mdpi…xxxhdpi), legacy icons 48dp (48/72/96/144/192 px) as `ic_launcher.png` (rounded square) and
+`ic_launcher_round.png` (circle). `mipmap-anydpi/ic_launcher.xml` and `ic_launcher_round.xml` use a plain
+`@color/launcher_bg` (`#130F0C`, Ink.Bg) background and the PNG foreground, which also serves as the
+monochrome layer for Android 13 themed icons. The old vector placeholder (`drawable/ic_launcher_foreground.xml`) is gone.
+
+Two things about the supplied files, handled in the conversion:
+
+* **The "foreground" PNG was not transparent.** It is fully opaque, identical to the flat icon with the
+  dark background baked in. The script recovers a true alpha mask by un-blending each pixel along the
+  background → amber (`#FFA32A`) axis, so the anti-aliased edges stay smooth on any launcher background.
+* **The mark extended past the adaptive-icon safe zone.** On the 108dp canvas the ₹ and its underline
+  reach about 42dp from the centre; the safe zone is a 33dp radius and a circular launcher mask shows only
+  36dp, so the underline would have been clipped. The foreground is scaled to 75.8% about the centre so
+  the farthest pixel sits at ~32dp. Checked against circle, squircle and full-bleed masks.
+
+With minSdk 26 the framework always resolves the adaptive XML, so the legacy PNGs are a fallback for
+launchers/tools that load density bitmaps directly. If design wants a bigger mark, supply a foreground with
+the art inside the central 66dp circle (≈626px of 1024) on a transparent background.
+
 ## Decisions & assumptions
 
 * **minSdk 26 (Android 8.0).** In 2026 this covers about 97% or more of active Android devices in India. Current
   AndroidX/Compose already need 23+, so going lower gains almost nobody. 26 also gives adaptive icons
   (so no raster launcher fallbacks), `java.time` and `java.util.Base64`. compile/targetSdk 37, the same as TileOps.
 * **Fast is the default tier**, and the last-used tier is remembered (blueprint §7.1).
-* **The token is not Keystore-encrypted.** It is the only key to the student's wallet (there are no accounts yet).
-  A Keystore key lost on some OEM ROMs would quietly empty their balance. So it lives in app-private
-  DataStore and is left out of backup and device transfer. Revisit once account recovery exists.
+* **The token is not Keystore-encrypted.** For guests it is still the only key to their wallet, and a
+  Keystore key lost on some OEM ROMs would quietly empty their balance. So it lives in app-private
+  DataStore and is left out of backup and device transfer. The password is never stored on the phone
+  (it is cleared from memory once signup/login succeeds); only the token and the account email are.
+* **Signup is optional (placement).** Welcome → **Start asking** stays the one-tap guest path; the account
+  screen is a secondary link there, the destination after logging out, and reachable from Profile. Its
+  **Skip for now** button calls `register()`. A guest who opens the account screen from Profile sees
+  **Keep using as a guest** instead (it just goes back).
+* **Guest → account does not carry the guest balance over.** The contract's signup takes only
+  `{email, password}`, so the app doesn't send the guest token with it. A guest with a balance sees a
+  notice on the account screen ("Creating an account or logging in starts a separate wallet, and the guest
+  balance can't be moved into it"). Suggested backend follow-up: accept the guest bearer on
+  `/v1/auth/signup` and convert that user in place; the client change is one header.
+* **Guests have no "Log out".** For a guest, logging out would orphan the wallet with no way back. Their
+  Profile offers **Create an account or log in** and **Delete guest wallet and history** instead.
+* **401 handling differs by session.** Guest: drop the token, re-register, retry once (unchanged; handy when
+  a dev DB resets). Account: never swap in a fresh guest wallet; sign out and show the login screen with
+  "Your session ended". After an explicit log out, nothing re-registers silently in the background.
+* **Delete account takes two deliberate steps:** open the dialog (which lists what is lost and shows the
+  forfeited balance), then type `DELETE` (case-insensitive) before the button arms. A failed request keeps
+  you signed in and says "Your account was not deleted".
+* **Login errors are generic on purpose** (400/401/403/404/422 → one message), and the forgot-password
+  dialog shows the same "if an account exists…" text whatever the server says; only a network failure
+  is reported as an error there.
+* **Validation:** a loose email shape check (something@domain.tld, no spaces, no `..`) and a non-blank
+  password, as specified. No client-side password-strength rule: the server's own 4xx message is shown if
+  it is a plain string (FastAPI validation lists fall back to friendly wording, as everywhere else).
 * **OCR uses ML Kit through Google Play services** (`play-services-mlkit-text-recognition`), not the bundled
   model. The bundled one added about 10 MB of native code per ABI (the release APK was 45 MB), which is a lot
   for low-storage phones on prepaid data. The model downloads at install time
@@ -245,18 +332,48 @@ unsupported.
   unknown before sending, so output stays at the typical 400. The figure is rounded to the paisa so the meter
   ticks only when the shown amount changes. The pre-send "not enough balance" check still uses the flat
   figure, so this change can't newly block a send. The exact charge still lands with the answer.
+* <a id="per-ask-not-showing"></a>**"Per-ask amount not showing" (investigated Nov 2026): two separate things.**
+  1. *All-free models (not a client bug).* While every tier routed to a free model, `GET /v1/models` returned
+     `0.0` for all three, so every meter read ₹0.00 and typing never moved them (scaling ₹0 by any length is
+     still ₹0). That looks like "nothing updates" but is correct display. With the backend moving Smart/Expert
+     to paid models, verified against a mock returning non-zero rates: Smart ₹0.31 → ₹0.33 and Expert ₹2.40 →
+     ₹2.53 as a ~1,800-character question is pasted, and Fast keeps showing ₹0.00 (a lit "0.00", not a blank).
+  2. *A real client bug, fixed.* Prices were fetched **once per process** (when the ask view model was
+     created), in one `try` *after* the balance call. Reproduced on an emulator with the pre-change build:
+     (a) if that first fetch failed (backend cold start, offline at launch), the tier meters read `-.--` and the
+     Ask button showed **no amount at all**, and stayed that way after the backend came back, until the app
+     process was killed; (b) a running app never saw a server price change: after switching Smart to ₹0.31
+     on the server, the old build still showed ₹0.00 after visiting the wallet and backgrounding/foregrounding;
+     (c) a failing `/v1/wallet` call skipped the price fetch entirely. Fix: the ask screen refreshes prices and
+     balance on every resume (`LifecycleEventEffect(ON_RESUME)`), prices and balance load independently, the
+     "couldn't load" error clears when a later refresh succeeds, the wallet re-reads prices when opened, and the
+     Ask button keeps its inset meter with `-.--` while no rate is known instead of dropping it. Re-tested with
+     the new build: outage at launch → `-.--` + error; backend back → resume → rates and amount return.
+  Free-tier wording also fixed: with Fast at ₹0 the ₹0-balance card said "Add ₹20 to start" (untrue, Fast
+  works at ₹0) and the wallet's "≈ N asks" / "Enough for…" lines disappeared entirely; they now say Fast is
+  free and count the cheapest paid tier.
 * **Top-up range ₹20–₹2,000.** The minimum is from the blueprint. The maximum keeps the closed-loop wallet
   small and stays under the ₹2,000 UPI MDR threshold. The backend should enforce the same limits.
 
 ## Known gaps / TODO
 
-* **Account recovery / multi-device (needed before real money):** the wallet is tied to an anonymous
-  device token. Uninstalling the app, clearing its data or changing phones loses the balance. Add phone/OTP or Google sign-in.
+* **Accounts exist now, but guests still lose their wallet** on uninstall/clear data/new phone, and a guest
+  balance can't be moved into a new account (see Decisions). Backend support for upgrading a guest in place
+  would close this.
+* **Log out is local only:** the contract has no logout/revoke endpoint, so the token stays valid
+  server-side until it expires. Add `POST /v1/auth/logout` if tokens are long-lived.
+* **Forgot password ends at the email.** The reset link's landing page (web or deep link back into the app)
+  is the backend's side and isn't designed yet.
+* **History rows can't be reopened.** `GET /v1/history` returns only the first question and totals, not
+  the answers, so rows are receipts (delete-able) rather than links. A `GET /v1/history/{id}` would let a
+  row open the full answer card and continue it. History isn't paginated either; fine for now, needed later.
+* **Legal text is a draft.** `core/LegalText.kt` is honest plain-language copy, marked "Draft · pending legal
+  review" on screen, with `[TO CONFIRM]` notes for refund/expiry rules (RBI PPI review), OpenRouter/provider
+  retention, payment provider, backup retention, minimum age / parental consent under the DPDP Act 2023,
+  and contact/grievance details. The password-hashing statement must be confirmed against the backend.
 * **Razorpay** isn't integrated (see above). The release build can't top up.
-* **App icon and brand** are placeholders (`res/drawable/ic_launcher_foreground.xml` is a tangerine bubble with a
-  seven-segment "?" in the new identity; the launcher label is still "StudyApp", which now contradicts the
-  general-purpose positioning and should change with the brand).
-* **No saved history.** "This session" answers live only in memory until the app process dies (history is v1.1 per the blueprint).
+* **Home's "This session" list is still in memory only** (it can reopen and follow up an answer); the
+  persistent record is Profile → History.
 * **No streaming.** `/v1/chat` returns the whole reply at once, so while waiting the fare meter shows a "meter running"
   chase rather than a live count. If the backend ever streams, the readout can tick live as tokens arrive.
 * **The Play-services OCR download hasn't been verified end to end.** On the dev emulator (no Google account)
@@ -270,12 +387,28 @@ unsupported.
   output:input ratio and the hard-coded 300/400/265 token baselines, which today must be kept in step with
   `EST_PROMPT_TOKENS` / `EST_COMPLETION_TOKENS` and the system prompt in the backend by hand.
 * **Answer rendering limits** are listed under [Answer rendering](#answer-rendering-markdown-and-maths).
-* No instrumented/UI tests, release signing config, Play listing, privacy policy, or crash reporting yet.
+* No instrumented/UI tests, release signing config, Play listing or crash reporting yet. Password-manager
+  autofill hints are set on the email/password fields (`ContentType`), but autofill wasn't tested with a
+  real password manager.
 * Wallet T&C copy (non-transferable, non-withdrawable) is a draft, pending the RBI/PPI check in blueprint §9.1.
 
 ## Tests
 
-Last run: 80 JVM tests, 0 failures (`./build.sh assembleDebug testDebugUnitTest`).
+Last run: 135 JVM tests, 0 failures (`./build.sh assembleDebug testDebugUnitTest`).
+
+**Accounts/profile/rename pass (Nov 2026), emulator (API 37, 1080×2400) against a throwaway mock of the
+full contract including the new endpoints:** fresh install → welcome → "Have an account?" → signup screen;
+empty submit and `riya@gmail` blocked client-side with no request sent; password eye toggles; signup →
+home with ₹0.00 balance and the "Fast answers are free right now" card; live estimates (see
+[above](#per-ask-not-showing)); top-up; Smart and Fast questions; Profile history (2 rows, tier tags,
+dates, fares; an extra `model_slug` field logged and ignored); delete row ("Keep it" does nothing,
+"Delete" sends `DELETE /v1/history/{id}`); Terms page; log out (confirmed) → "Welcome back." with no way
+back into the app; wrong password → generic message; forgot password → generic confirmation; correct login
+→ ₹19.50 back; delete account (button inert until `DELETE` typed, forfeited balance shown) → login screen;
+skip → guest home with the pilot-dot nudge → guest Profile; signup with an existing email → 409 message
+with a one-tap Log in. That walk-through caught one bug the unit tests then covered: after switching to a
+new account the balance meter stayed `--.--` (an account's ₹0 was already in the backend's StateFlow, so it
+never re-emitted after the screen reset).
 
 Answer rendering, the cut-off strip and the live estimate were checked on a real phone (ColorOS, 1080×2400)
 against a throwaway mock of the contract serving the two real-world answers (one with `truncated: true`)
@@ -309,5 +442,18 @@ tier → confirmation dialog → answer → home shows the session receipt → c
   history, Devanagari token count, sub-paisa rates); `ui/AskViewModelTest` checks it follows typing, tier
   switches and the open thread, plus `truncated` → Cut off → Continue pre-filling the follow-up (without
   overwriting typed text). `data/ApiClientTest` checks `truncated` parses and defaults to `false` when absent or `null`.
+* `data/HistoryParserTest` covers the contract shape and the drift it tolerates (aliases, string numbers, epoch and
+  zone-less dates, list-as-count, bare arrays, `null` lists, skipped id-less items, unknown-field reporting).
+* `data/BackendTest` also covers signup/login storing token + email, restoring the session, an account 401 signing out
+  (never silently becoming a guest), no background re-registration after log out, delete-history 404 as success, and
+  delete-account signing out. `data/ApiClientTest` checks the auth/history/delete paths, methods, bodies and bearer use.
+* `ui/AuthViewModelTest` (validation blocks the network, signup, 409 → log in instead, generic login errors, guest skip,
+  the guest-balance warning, forgot password) and `ui/ProfileViewModelTest` (history load/retry, confirmed delete,
+  failed delete, confirmed log out, delete account arming only on `DELETE`, failed deletion keeps you signed in, guests).
+* `ui/AskViewModelTest` also covers the per-ask fixes: free Fast reads ₹0.00 while paid tiers follow the question,
+  prices recover on the next refresh after a failed first load, a balance failure no longer blocks prices, price
+  changes are picked up, and reset keeps tier, prices and balance.
+* `core/AuthTextTest`, `core/HistoryTextTest`, `core/LegalTextTest`: email shapes, error wording, history dates in
+  the local calendar, and that both legal texts are drafts and say what they must.
 * `core/*Test` covers ₹ formatting, meter readout text (leading unlit cells, sub-paisa), tier mapping, top-up validation,
   example rotation, OCR cleanup and friendly errors.

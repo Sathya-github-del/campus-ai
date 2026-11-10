@@ -266,6 +266,11 @@ class ChatService:
             self._locks[key] = lock
         return lock
 
+    def conversation_lock(self, conversation_id: str) -> asyncio.Lock:
+        """The in-process lock a chat turn holds on its conversation. Deleting a conversation takes it
+        too, so it waits for an in-flight answer to be saved and charged instead of racing it."""
+        return self._lock(conversation_id)
+
     def _history(self, user_id: str, conversation_id: str | None) -> list[dict]:
         if conversation_id is None:
             return []
