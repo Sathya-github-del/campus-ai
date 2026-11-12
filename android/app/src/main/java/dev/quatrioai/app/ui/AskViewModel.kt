@@ -12,6 +12,7 @@ import dev.quatrioai.app.data.ApiException
 import dev.quatrioai.app.data.AppPrefs
 import dev.quatrioai.app.data.Backend
 import dev.quatrioai.app.data.ChatRequest
+import dev.quatrioai.app.data.HistoryItem
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -82,6 +83,9 @@ data class AskUiState(
     val confirmExpert: AskTarget? = null,
     /** A saved conversation is being fetched to reopen it. */
     val openingSaved: Boolean = false,
+    /** Saved conversations for the chats drawer; null until the first load finishes. */
+    val history: List<HistoryItem>? = null,
+    val historyError: String? = null,
 ) {
     /** The tier's flat, typical per-message estimate from the server (used for the pre-send balance check). */
     val estimate: Double? get() = prices.firstOrNull { it.tier == tier }?.estCostInr
@@ -199,6 +203,21 @@ class AskViewModel(private val backend: Backend, private val prefs: AppPrefs) : 
     fun openThread(id: Long) = _state.update {
         if (it.threads.none { t -> t.id == id }) it
         else it.copy(openThreadId = id, composingFollowUp = false, followUp = "", needsTopUp = false, error = null)
+    }
+
+    /** Saved conversations for the chats drawer (quiet on failure if a list is already shown). */
+    fun loadHistory() {
+        viewModelScope.launch {
+            try {
+                if (!backend.isRegistered()) return@launch
+                val items = backend.history()
+                _state.update { it.copy(history = items, historyError = null) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { if (it.history == null) it.copy(historyError = ErrorText.of(e)) else it }
+            }
+        }
     }
 
     /**

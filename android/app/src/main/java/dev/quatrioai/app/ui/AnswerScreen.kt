@@ -66,6 +66,7 @@ import dev.quatrioai.app.core.Markdown
 import dev.quatrioai.app.core.MeterText
 import dev.quatrioai.app.core.Money
 import dev.quatrioai.app.core.Tier
+import dev.quatrioai.app.core.TierPrice
 
 /**
  * A conversation, laid out like a chat: your questions as bubbles on the right, answers as plain
@@ -259,7 +260,7 @@ private fun ReplyComposer(s: AskUiState, vm: AskViewModel, onOpenCamera: () -> U
                 IconButton(onClick = onOpenCamera, enabled = !s.sending) {
                     Icon(painterResource(R.drawable.ic_camera), "Add text from a photo", tint = Lit.Tangerine)
                 }
-                TierMenu(s.tier, s, vm::setTier)
+                TierMenu(s.tier, s.followUpEstimate, s.followUpPrices, vm::setTier)
                 Spacer(Modifier.weight(1f))
                 FilledIconButton(
                     onClick = vm::followUp,
@@ -277,9 +278,9 @@ private fun ReplyComposer(s: AskUiState, vm: AskViewModel, onOpenCamera: () -> U
     }
 }
 
-/** Compact tier switch for replies: current tier + rate, tap to change. */
+/** Compact tier chip (like a model picker): current tier + rate, tap to change. */
 @Composable
-private fun TierMenu(tier: Tier, s: AskUiState, onSelect: (Tier) -> Unit) {
+internal fun TierMenu(tier: Tier, estimate: Double?, prices: List<TierPrice>, onSelect: (Tier) -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
         Row(
@@ -288,7 +289,7 @@ private fun TierMenu(tier: Tier, s: AskUiState, onSelect: (Tier) -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TierTag(tier)
-            s.followUpEstimate?.let {
+            estimate?.let {
                 Spacer(Modifier.width(10.dp))
                 RupeeSign(12.dp)
                 MeterReadout(it, 12.dp)
@@ -297,7 +298,7 @@ private fun TierMenu(tier: Tier, s: AskUiState, onSelect: (Tier) -> Unit) {
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }, containerColor = Ink.Raised2) {
             Tier.entries.forEach { t ->
-                val est = s.followUpPrices.firstOrNull { it.tier == t }?.estCostInr
+                val est = prices.firstOrNull { it.tier == t }?.estCostInr
                 DropdownMenuItem(
                     text = {
                         Column {
