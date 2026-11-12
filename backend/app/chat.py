@@ -407,4 +407,5 @@ class ChatService:
             "cost_inr": units_to_inr(billable),
             "wallet_balance_inr": paise_to_inr(result.available_paise),
             "truncated": truncated,
+            "model_name": model.name,
         }

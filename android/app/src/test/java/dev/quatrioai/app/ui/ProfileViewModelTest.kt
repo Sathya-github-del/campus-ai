@@ -5,6 +5,7 @@ import dev.quatrioai.app.data.ApiException
 import dev.quatrioai.app.data.Backend
 import dev.quatrioai.app.data.FakeApi
 import dev.quatrioai.app.data.HistoryItem
+import dev.quatrioai.app.data.HistoryTagsStore
 import dev.quatrioai.app.data.MemoryPrefs
 import dev.quatrioai.app.data.Session
 import kotlinx.coroutines.Dispatchers
@@ -24,11 +25,21 @@ import org.junit.Test
 import java.io.IOException
 import java.time.Instant
 
+private class MemoryHistoryTagsStore : HistoryTagsStore {
+    val tags = mutableMapOf<String, String>()
+    override suspend fun tag(conversationId: String) = tags[conversationId]
+    override suspend fun setTag(conversationId: String, tag: String?) {
+        if (tag.isNullOrBlank()) tags.remove(conversationId) else tags[conversationId] = tag
+    }
+    override suspend fun allTags() = tags.toMap()
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class ProfileViewModelTest {
     private val api = FakeApi()
     private val prefs = MemoryPrefs()
     private val backend = Backend(api, prefs)
+    private val tagsStore = MemoryHistoryTagsStore()
 
     private fun item(id: String, cost: Double) = HistoryItem(id, "question $id", Instant.EPOCH, 1, cost, Tier.FAST)
 
@@ -44,7 +55,7 @@ class ProfileViewModelTest {
         api.wallets["acct"] = 7.5
         api.history["acct"] = mutableListOf(item("c1", 0.02), item("c2", 0.4))
         backend.login("a@b.co", "pw")
-        return ProfileViewModel(backend)
+        return ProfileViewModel(backend, tagsStore)
     }
 
     @Test
@@ -144,9 +155,57 @@ class ProfileViewModelTest {
     fun guestsSeeTheirHistoryToo() = runTest {
         backend.ensureRegistered()
         api.history["tok1"] = mutableListOf(item("g1", 0.0))
-        val s = ProfileViewModel(backend).state.value
+        val s = ProfileViewModel(backend, tagsStore).state.value
         assertTrue(s.isGuest)
         assertNull(s.email)
         assertEquals(listOf("g1"), s.history!!.map { it.conversationId })
+    }
+
+    @Test
+    fun settingATagPersistsAndShowsInState() = runTest {
+        val vm = signedIn()
+        val c1 = vm.state.value.history!!.first()
+        vm.setTag(c1, "Homework")
+        assertEquals("Homework", vm.state.value.tags[c1.conversationId])
+        assertEquals("Homework", tagsStore.tags[c1.conversationId])
+        vm.setTag(c1, null)
+        assertNull(vm.state.value.tags[c1.conversationId])
+    }
+
+    @Test
+    fun searchFiltersByQuestionOrTag() = runTest {
+        val vm = signedIn() // c1 "question c1", c2 "question c2"
+        vm.setTag(vm.state.value.history!!.first { it.conversationId == "c2" }, "Exam prep")
+
+        vm.setSearchQuery("c1")
+        assertEquals(listOf("c1"), vm.state.value.filteredHistory!!.map { it.conversationId })
+
+        vm.setSearchQuery("exam")
+        assertEquals(listOf("c2"), vm.state.value.filteredHistory!!.map { it.conversationId })
+
+        vm.setSearchQuery("")
+        assertEquals(listOf("c1", "c2"), vm.state.value.filteredHistory!!.map { it.conversationId })
+    }
+
+    @Test
+    fun deletingAnItemAlsoForgetsItsTag() = runTest {
+        val vm = signedIn()
+        val c1 = vm.state.value.history!!.first { it.conversationId == "c1" }
+        vm.setTag(c1, "Homework")
+        vm.askDelete(c1)
+        vm.confirmDelete()
+        assertNull(vm.state.value.tags["c1"])
+        assertNull(tagsStore.tags["c1"])
+    }
+
+    @Test
+    fun exportMarkdownRespectsTheCurrentSearch() = runTest {
+        val vm = signedIn()
+        vm.setTag(vm.state.value.history!!.first { it.conversationId == "c1" }, "Homework")
+        vm.setSearchQuery("c1")
+        val md = vm.exportMarkdown()
+        assertTrue(md.contains("question c1"))
+        assertTrue(md.contains("Tag: Homework"))
+        assertFalse(md.contains("question c2"))
     }
 }

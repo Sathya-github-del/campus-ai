@@ -30,6 +30,8 @@ class FakeApi : AnswerApi {
     var chatError: Exception? = null
     /** The next replies come back cut off at the length limit (POST /v1/chat "truncated": true). */
     var truncateReplies = false
+    /** Model name the fake reports back on chat() ("model_name" in the real contract). */
+    var modelName: String? = null
     /** When set, chat() waits for it, so tests can look at the "meter running" state. */
     var chatGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
 
@@ -104,6 +106,16 @@ class FakeApi : AnswerApi {
         return HistoryPage(history[token].orEmpty().toList())
     }
 
+    /** conversationId -> saved exchanges, for GET /v1/history/{id}. */
+    val threads = mutableMapOf<String, List<ThreadExchange>>()
+    var threadError: Exception? = null
+
+    override suspend fun thread(token: String, conversationId: String): ThreadResponse {
+        calls += "thread:$conversationId"; check(token)
+        threadError?.let { throw it }
+        return ThreadResponse(conversationId, threads[conversationId] ?: throw ApiException(404, "not found"))
+    }
+
     override suspend fun deleteHistory(token: String, conversationId: String) {
         calls += "deleteHistory:$conversationId"; check(token)
         deleteError?.let { throw it }
@@ -129,6 +141,7 @@ class FakeApi : AnswerApi {
         val bal = wallets.getValue(token)
         if (bal < chatCost) throw ApiException(402, "insufficient balance")
         wallets[token] = bal - chatCost
-        return ChatResponse("answer to: ${request.message}", request.conversationId ?: "c1", chatCost, wallets.getValue(token), truncateReplies)
+        return ChatResponse("answer to: ${request.message}", request.conversationId ?: "c1", chatCost, wallets.getValue(token),
+            truncateReplies, modelName)
     }
 }

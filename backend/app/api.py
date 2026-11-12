@@ -69,6 +69,18 @@ class HistoryOut(BaseModel):
     conversations: list[ConversationOut]
 
 
+class ExchangeOut(BaseModel):
+    question: str
+    answer: str
+    tier: Tier
+    cost_inr: float
+
+
+class ThreadOut(BaseModel):
+    conversation_id: str
+    exchanges: list[ExchangeOut]
+
+
 class WalletOut(BaseModel):
     balance_inr: float
 
@@ -110,6 +122,7 @@ class ChatOut(BaseModel):
     cost_inr: float
     wallet_balance_inr: float
     truncated: bool = False
+    model_name: str | None = None
 
 
 def hash_token(token: str) -> str:
@@ -281,6 +294,22 @@ def create_app(settings: Settings | None = None, *, client=None, provider: Payme
              "created_at": iso_utc(c.created_at), "updated_at": iso_utc(c.updated_at),
              "questions": c.questions, "cost_inr": units_to_inr(c.cost_units)}
             for c in accounts.list_conversations(db, user_id, limit)]}
+
+    @app.get("/v1/history/{conversation_id}", response_model=ThreadOut)
+    def get_thread(conversation_id: str, user_id: str = Depends(current_user)):
+        """One saved conversation as question/answer pairs, so the app can reopen it and follow up."""
+        msgs = accounts.get_conversation(db, user_id, conversation_id) if len(conversation_id) <= 64 else None
+        if msgs is None:
+            raise APIError(404, "conversation_not_found", "Conversation not found.")
+        exchanges, question, tier = [], None, None
+        for m in msgs:
+            if m.role == "user":
+                question, tier = m.content, m.tier
+            elif m.role == "assistant" and question is not None:
+                exchanges.append({"question": question, "answer": m.content, "tier": m.tier or tier or "fast",
+                                  "cost_inr": units_to_inr(m.cost_units)})
+                question = None
+        return {"conversation_id": conversation_id, "exchanges": exchanges}
 
     @app.delete("/v1/history/{conversation_id}", status_code=204, response_class=Response)
     async def delete_history(conversation_id: str, user_id: str = Depends(current_user)):

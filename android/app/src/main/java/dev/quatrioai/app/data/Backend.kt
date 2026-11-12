@@ -133,6 +133,9 @@ class Backend(private val api: AnswerApi, private val prefs: AppPrefs) {
 
     suspend fun history(): List<HistoryItem> = authed { api.history(it) }.items
 
+    /** One saved conversation's question/answer pairs, to reopen it on the answer screen. */
+    suspend fun thread(conversationId: String): ThreadResponse = authed { api.thread(it, conversationId) }
+
     /** Deletes one conversation from history. 404 means it is already gone, which is what the user wanted. */
     suspend fun deleteHistory(conversationId: String) {
         try {

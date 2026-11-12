@@ -32,6 +32,8 @@ data class Exchange(
     val balanceAfter: Double? = null,
     /** The answer was cut off at the model's length limit (shown as "Cut off · follow up to continue"). */
     val truncated: Boolean = false,
+    /** Which model answered (server's human-readable name), for the quiet "Answered by" trust line. */
+    val modelName: String? = null,
 ) {
     val pending: Boolean get() = answer == null
 }
@@ -78,6 +80,8 @@ data class AskUiState(
     val error: String? = null,
     /** Expert send waiting for confirmation, and what it was for. */
     val confirmExpert: AskTarget? = null,
+    /** A saved conversation is being fetched to reopen it. */
+    val openingSaved: Boolean = false,
 ) {
     /** The tier's flat, typical per-message estimate from the server (used for the pre-send balance check). */
     val estimate: Double? get() = prices.firstOrNull { it.tier == tier }?.estCostInr
@@ -197,6 +201,35 @@ class AskViewModel(private val backend: Backend, private val prefs: AppPrefs) : 
         else it.copy(openThreadId = id, composingFollowUp = false, followUp = "", needsTopUp = false, error = null)
     }
 
+    /**
+     * Reopens a saved conversation from history. If it's already on screen this session, just opens
+     * it; otherwise fetches its question/answer pairs and adds it to "This session" so a follow-up
+     * continues the same conversation on the server.
+     */
+    fun openSaved(conversationId: String) {
+        _state.value.threads.firstOrNull { it.conversationId == conversationId }?.let { openThread(it.id); return }
+        if (_state.value.openingSaved) return
+        _state.update { it.copy(openingSaved = true, error = null) }
+        viewModelScope.launch {
+            try {
+                val r = backend.thread(conversationId)
+                val legs = r.exchanges.map { e ->
+                    Exchange(nextId++, e.question, Tier.fromKey(e.tier) ?: Tier.DEFAULT, answer = e.answer, costInr = e.costInr)
+                }
+                if (legs.isEmpty()) throw IllegalStateException("This conversation has no answers yet.")
+                val thread = AskThread(nextId++, legs, conversationId = r.conversationId)
+                _state.update {
+                    it.copy(threads = listOf(thread) + it.threads, openThreadId = thread.id, openingSaved = false,
+                        composingFollowUp = false, followUp = "", needsTopUp = false)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(openingSaved = false, error = ErrorText.of(e)) }
+            }
+        }
+    }
+
     /** Back to home. A request still in flight keeps running; its card is in "This session". */
     fun closeThread() = _state.update {
         it.copy(openThreadId = null, composingFollowUp = false, followUp = "", needsTopUp = false, error = null)
@@ -272,7 +305,8 @@ class AskViewModel(private val backend: Backend, private val prefs: AppPrefs) : 
         viewModelScope.launch {
             try {
                 val r = backend.chat(ChatRequest(s.tier.key, text, thread?.conversationId, imageBase64 = null))
-                val done = leg.copy(answer = r.reply, costInr = r.costInr, balanceAfter = r.walletBalanceInr, truncated = r.truncated)
+                val done = leg.copy(answer = r.reply, costInr = r.costInr, balanceAfter = r.walletBalanceInr,
+                    truncated = r.truncated, modelName = r.modelName)
                 _state.update {
                     it.copy(threads = it.threads.map { t ->
                         if (t.id != threadId) t

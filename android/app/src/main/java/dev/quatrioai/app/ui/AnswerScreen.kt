@@ -9,13 +9,14 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,12 +29,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
-import dev.quatrioai.app.core.Markdown
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
@@ -41,9 +42,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -54,9 +52,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextRange
@@ -65,14 +62,16 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.quatrioai.app.R
+import dev.quatrioai.app.core.Markdown
 import dev.quatrioai.app.core.MeterText
 import dev.quatrioai.app.core.Money
 import dev.quatrioai.app.core.Tier
 
 /**
- * One question, one answer card, with its fare. A follow-up is an explicit choice ("Follow up"),
- * which adds the next part to the same card stack and a running total, rather than an open-ended
- * chat log being the default.
+ * A conversation, laid out like a chat: your questions as bubbles on the right, answers as plain
+ * flowing text on the left with a quiet fare line under each, and a reply box always at the bottom.
+ * Every reply is a follow-up on the same conversation (so it costs a little more than a fresh
+ * question); "+" in the top bar starts a new one.
  */
 @Composable
 fun AnswerScreen(
@@ -83,45 +82,51 @@ fun AnswerScreen(
     onOpenCamera: () -> Unit,
 ) {
     val scroll = rememberScrollState()
-    // A new follow-up part was added: bring it into view (don't jump when an answer lands, so a long
-    // answer is read from its start).
+    // A new part was added: bring it into view (don't jump when an answer lands, so a long answer is read from its start).
     LaunchedEffect(thread.exchanges.size) { if (thread.isThread) scroll.animateScrollTo(scroll.maxValue) }
+    // The reply box is the follow-up box, so camera text lands there while this screen is open.
+    LaunchedEffect(thread.id, s.composingFollowUp) { if (!s.composingFollowUp) vm.startFollowUp() }
 
     Column(Modifier.fillMaxSize().background(Ink.Bg).statusBarsPadding().imePadding()) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+            Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = vm::closeThread) {
                 Icon(painterResource(R.drawable.ic_back), "Back to questions", tint = Ink.Paper)
             }
-            Legend(if (thread.isThread) "Your question · ${thread.exchanges.size} parts" else "Your answer", color = Ink.PaperDim)
-            Spacer(Modifier.weight(1f))
+            Text(
+                thread.first.question,
+                style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Serif),
+                color = Ink.Paper, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            IconButton(onClick = vm::closeThread, enabled = !s.sending) {
+                Icon(painterResource(R.drawable.ic_add), "New question", tint = Lit.Tangerine)
+            }
             BalanceMeter(s.balance, onOpenWallet)
         }
 
         Column(
             Modifier.weight(1f).verticalScroll(scroll).padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             Spacer(Modifier.height(2.dp))
             thread.exchanges.forEachIndexed { i, e ->
-                LegCard(
+                Turn(
                     e,
-                    label = if (!thread.isThread) null else if (i == 0) "Question" else "Follow-up $i",
                     // Only the latest part can be continued; an earlier cut-off part just keeps its note.
                     onContinue = if (i == thread.exchanges.lastIndex && !s.sending) vm::continueCutOff else null,
                 )
             }
-            if (thread.isThread && !thread.pending) TotalFare(thread)
-            if (!thread.isThread && !thread.pending && !s.composingFollowUp) {
-                Text(
-                    "Need more? Follow up on this answer and it continues from here. Otherwise, it's done: you paid for this one answer.",
-                    style = MaterialTheme.typography.bodySmall, color = Ink.PaperFaint,
-                    modifier = Modifier.padding(horizontal = 8.dp),
+            if (thread.isThread && !thread.pending) {
+                Legend(
+                    "${thread.exchanges.size} parts · total ${Money.inr(thread.totalCostInr)} · each reply re-reads the parts above",
+                    color = Ink.PaperFaint,
                 )
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(4.dp))
         }
 
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
@@ -129,113 +134,84 @@ fun AnswerScreen(
             s.error?.let { ErrorBanner(it, vm::dismissError, Modifier.padding(bottom = 10.dp)) }
         }
 
-        if (s.composingFollowUp) {
-            FollowUpComposer(s, thread, vm, onOpenCamera)
-        } else {
-            Row(
-                Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                OutlinedButton(
-                    onClick = vm::startFollowUp,
-                    enabled = !s.sending,
-                    shape = MaterialTheme.shapes.medium,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, if (s.sending) Ink.LineSoft else Lit.Tangerine.copy(alpha = 0.7f)),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Lit.Tangerine),
-                    modifier = Modifier.weight(1f).height(54.dp),
-                ) {
-                    Icon(painterResource(R.drawable.ic_follow_up), null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Follow up")
-                }
-                Button(
-                    onClick = vm::closeThread,
-                    shape = MaterialTheme.shapes.medium,
-                    colors = ButtonDefaults.buttonColors(containerColor = Lit.Tangerine, contentColor = Color(0xFF2B1600)),
-                    modifier = Modifier.weight(1f).height(54.dp),
-                ) {
-                    Icon(painterResource(R.drawable.ic_add), null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("New question")
-                }
-            }
-        }
+        ReplyComposer(s, vm, onOpenCamera)
     }
 }
 
-/** One question + answer, laid out like a receipt: question, tear line, answer, fare. */
+/** One question (your bubble) and its answer (plain text with a quiet fare line). */
 @Composable
-private fun LegCard(e: Exchange, label: String?, onContinue: (() -> Unit)?) {
+private fun Turn(e: Exchange, onContinue: (() -> Unit)?) {
     val context = LocalContext.current
-    val shape = MaterialTheme.shapes.large
-    var expanded by remember(e.id) { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth().clip(shape).background(Ink.Surface).border(1.dp, Ink.LineSoft, shape)) {
-        Column(Modifier.padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TierTag(e.tier)
-                Spacer(Modifier.weight(1f))
-                label?.let { Legend(it) }
+    Column(Modifier.fillMaxWidth()) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            Column(
+                Modifier.align(Alignment.CenterEnd).widthIn(max = maxWidth * 0.86f)
+                    .clip(RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp)).background(Ink.Raised2)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            ) {
+                SelectionContainer {
+                    Text(e.question, style = MaterialTheme.typography.bodyLarge, color = Ink.Paper)
+                }
             }
-            Spacer(Modifier.height(10.dp))
-            Text(
-                e.question,
-                style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Serif),
-                color = Ink.Paper,
-                maxLines = if (expanded) Int.MAX_VALUE else 5,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.clickable(onClickLabel = if (expanded) "Collapse question" else "Show whole question") { expanded = !expanded },
-            )
         }
-        Perforation(Modifier.padding(vertical = 6.dp), notch = Ink.Bg)
+        Spacer(Modifier.height(14.dp))
         AnimatedContent(
             targetState = e.pending,
             transitionSpec = { fadeIn(tween(350)) togetherWith fadeOut(tween(150)) },
             label = "answer",
         ) { pending ->
             if (pending) {
-                Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
-                    MeterPanel(contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)) {
-                        MeterRunning(22.dp, cells = 3)
-                    }
-                    Spacer(Modifier.width(14.dp))
-                    Column {
-                        Text("Working on it…", style = MaterialTheme.typography.titleSmall, color = Ink.Paper)
-                        Text(
-                            "The meter's running. The exact fare lands with the answer.",
-                            style = MaterialTheme.typography.bodySmall, color = Ink.PaperFaint,
-                        )
-                    }
+                Row(Modifier.padding(start = 2.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    MeterRunning(16.dp, cells = 3)
+                    Spacer(Modifier.width(12.dp))
+                    Text("Thinking… the exact fare lands with the answer.", style = MaterialTheme.typography.bodySmall, color = Ink.PaperFaint)
                 }
             } else {
-                Column {
-                    SelectionContainer {
-                        AnswerText(
-                            e.answer.orEmpty(),
-                            Modifier.padding(start = 18.dp, end = 18.dp, top = 6.dp, bottom = 14.dp),
-                        )
-                    }
+                Column(Modifier.fillMaxWidth()) {
+                    SelectionContainer { AnswerText(e.answer.orEmpty(), Modifier.padding(start = 2.dp, end = 2.dp)) }
                     if (e.truncated) CutOffStrip(onContinue)
-                    // Copy gives clean text (no ** or LaTeX), so it pastes readably into chats and notes.
-                    FareStrip(e, onCopy = { context.copy(Markdown.plainText(e.answer.orEmpty())) })
+                    FareLine(e, onCopy = { context.copy(Markdown.plainText(e.answer.orEmpty())) })
                 }
             }
         }
     }
 }
 
+/** Under each answer: tier, exact fare, which model answered, and copy. Quiet, like a receipt footer. */
+@Composable
+private fun FareLine(e: Exchange, onCopy: () -> Unit) {
+    val cost = e.costInr ?: 0.0
+    Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        TierTag(e.tier)
+        Spacer(Modifier.width(10.dp))
+        Fare(cost, 13.dp, startFrom = 0.0)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            buildString {
+                append(if (MeterText.isSubPaisa(cost)) "under ₹0.01" else "exact fare")
+                e.modelName?.let { append(" · $it") }
+            },
+            style = MaterialTheme.typography.bodySmall, color = Ink.PaperFaint,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onCopy, modifier = Modifier.size(36.dp)) {
+            Icon(painterResource(R.drawable.ic_copy), "Copy answer", tint = Ink.PaperDim, modifier = Modifier.size(18.dp))
+        }
+    }
+}
+
 /**
- * The answer stopped at the model's length limit. Styled like the "Follow up" action (tangerine
- * outline, follow-up icon) because that is the fix: tapping it opens the follow-up box with
- * "please continue" ready to send. On an earlier part of a thread it is just the note.
+ * The answer stopped at the model's length limit. Styled like the reply action (tangerine outline,
+ * follow-up icon) because that is the fix: tapping it puts "please continue" in the reply box.
  */
 @Composable
 private fun CutOffStrip(onContinue: (() -> Unit)?) {
     val shape = MaterialTheme.shapes.medium
     Row(
-        Modifier.padding(start = 14.dp, end = 14.dp, bottom = 14.dp).fillMaxWidth().clip(shape)
+        Modifier.padding(top = 10.dp).fillMaxWidth().clip(shape)
             .background(Lit.Tangerine.copy(alpha = 0.07f))
             .border(1.dp, Lit.Tangerine.copy(alpha = if (onContinue != null) 0.7f else 0.35f), shape)
-            .then(if (onContinue != null) Modifier.clickable(onClickLabel = "Follow up to continue", onClick = onContinue) else Modifier)
+            .then(if (onContinue != null) Modifier.clickable(onClickLabel = "Reply to continue", onClick = onContinue) else Modifier)
             .padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -244,7 +220,7 @@ private fun CutOffStrip(onContinue: (() -> Unit)?) {
         Column(Modifier.weight(1f)) {
             Legend("Cut off", color = Lit.Tangerine)
             Text(
-                if (onContinue != null) "This answer hit its length limit. Follow up to continue."
+                if (onContinue != null) "This answer hit its length limit. Reply to continue."
                 else "This answer hit its length limit before it finished.",
                 style = MaterialTheme.typography.bodySmall, color = Ink.PaperDim, modifier = Modifier.padding(top = 2.dp),
             )
@@ -256,115 +232,59 @@ private fun CutOffStrip(onContinue: (() -> Unit)?) {
     }
 }
 
-/** The bottom of an answer card: the fare lands here, ticking up from ₹0.00 to the exact charge. */
+/** The always-there reply box: camera, text, tier + rate, send. */
 @Composable
-private fun FareStrip(e: Exchange, onCopy: () -> Unit) {
-    val cost = e.costInr ?: 0.0
-    Row(
-        Modifier.fillMaxWidth().background(Ink.Panel).padding(start = 18.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column {
-            Legend("Fare", color = Lit.Amber.copy(alpha = 0.8f))
-            Fare(cost, 26.dp, startFrom = 0.0, modifier = Modifier.padding(top = 4.dp))
-            Text(
-                buildString {
-                    if (MeterText.isSubPaisa(cost)) append("Under ₹0.01 · ")
-                    append("exact charge")
-                    e.balanceAfter?.let { append(" · balance ${Money.inr(it)}") }
-                },
-                style = MaterialTheme.typography.bodySmall, color = Ink.PaperFaint, modifier = Modifier.padding(top = 4.dp),
-            )
-        }
-        Spacer(Modifier.weight(1f))
-        IconButton(onClick = onCopy) {
-            Icon(painterResource(R.drawable.ic_copy), "Copy answer", tint = Ink.PaperDim, modifier = Modifier.size(20.dp))
-        }
-    }
-}
-
-/** Running total once a question has follow-ups. */
-@Composable
-private fun TotalFare(thread: AskThread) {
-    MeterPanel(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, border = Lit.Tangerine.copy(alpha = 0.4f),
-        contentPadding = PaddingValues(18.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Legend("Total for this question", color = Lit.Amber.copy(alpha = 0.8f))
-                Text(
-                    "${thread.exchanges.size} parts. Each follow-up re-reads the earlier parts, so it costs a bit more than a fresh question.",
-                    style = MaterialTheme.typography.bodySmall, color = Ink.PaperFaint, modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Fare(thread.totalCostInr, 30.dp)
-        }
-    }
-}
-
-@Composable
-private fun FollowUpComposer(s: AskUiState, thread: AskThread, vm: AskViewModel, onOpenCamera: () -> Unit) {
+private fun ReplyComposer(s: AskUiState, vm: AskViewModel, onOpenCamera: () -> Unit) {
     var field by remember { mutableStateOf(TextFieldValue(s.followUp, TextRange(s.followUp.length))) }
     if (field.text != s.followUp) field = TextFieldValue(s.followUp, TextRange(s.followUp.length))
-    val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    val shape = RoundedCornerShape(26.dp)
 
-    Column(
-        Modifier.fillMaxWidth().background(Ink.Raised).navigationBarsPadding()
-            .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TierMenu(s.tier, s, vm::setTier)
-            Spacer(Modifier.weight(1f))
-            IconButton(onClick = vm::cancelFollowUp) {
-                Icon(painterResource(R.drawable.ic_close), "Cancel follow-up", tint = Ink.PaperDim, modifier = Modifier.size(20.dp))
+    Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 12.dp, end = 12.dp, bottom = 10.dp)) {
+        Column(
+            Modifier.fillMaxWidth().clip(shape).background(Ink.Surface).border(1.dp, Ink.Line, shape)
+                .padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+        ) {
+            Box(Modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 12.dp, vertical = 10.dp), contentAlignment = Alignment.CenterStart) {
+                if (field.text.isEmpty()) Text("Reply…", style = MaterialTheme.typography.bodyLarge, color = Ink.PaperFaint)
+                BasicTextField(
+                    value = field,
+                    onValueChange = { field = it; vm.setFollowUp(it.text) },
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = Ink.Paper),
+                    cursorBrush = SolidColor(Lit.Tangerine),
+                    maxLines = 6,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onOpenCamera, enabled = !s.sending) {
+                    Icon(painterResource(R.drawable.ic_camera), "Add text from a photo", tint = Lit.Tangerine)
+                }
+                TierMenu(s.tier, s, vm::setTier)
+                Spacer(Modifier.weight(1f))
+                FilledIconButton(
+                    onClick = vm::followUp,
+                    enabled = s.canFollowUp,
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = Lit.Tangerine, contentColor = Color(0xFF2B1600),
+                        disabledContainerColor = Ink.Raised2, disabledContentColor = Ink.PaperFaint,
+                    ),
+                    modifier = Modifier.size(44.dp),
+                ) {
+                    Icon(painterResource(R.drawable.ic_send), s.followUpEstimate?.let { "Send reply, ${Money.estimate(it)}" } ?: "Send reply")
+                }
             }
         }
-        Row(verticalAlignment = Alignment.Bottom) {
-            IconButton(onClick = onOpenCamera, enabled = !s.sending) {
-                Icon(painterResource(R.drawable.ic_camera), "Add text from a photo", tint = Lit.Tangerine)
-            }
-            OutlinedTextField(
-                value = field,
-                onValueChange = { field = it; vm.setFollowUp(it.text) },
-                placeholder = { Text("Ask more about this answer…", color = Ink.PaperFaint) },
-                maxLines = 5,
-                shape = MaterialTheme.shapes.large,
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = Lit.Tangerine, unfocusedBorderColor = Ink.Line,
-                    cursorColor = Lit.Tangerine, focusedContainerColor = Ink.Surface, unfocusedContainerColor = Ink.Surface,
-                ),
-                modifier = Modifier.weight(1f).heightIn(min = 52.dp).focusRequester(focus),
-            )
-            Spacer(Modifier.width(8.dp))
-            FilledIconButton(
-                onClick = vm::followUp,
-                enabled = s.canFollowUp,
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = Lit.Tangerine, contentColor = Color(0xFF2B1600),
-                    disabledContainerColor = Ink.Raised2, disabledContentColor = Ink.PaperFaint,
-                ),
-                modifier = Modifier.size(52.dp),
-            ) {
-                Icon(painterResource(R.drawable.ic_send), s.followUpEstimate?.let { "Send follow-up, ${Money.estimate(it)}" } ?: "Send follow-up")
-            }
-        }
-        Text(
-            "A follow-up re-reads the answer${if (thread.isThread) "s" else ""} above, so it costs more than a fresh question. The rate shown includes that.",
-            style = MaterialTheme.typography.bodySmall, color = Ink.PaperFaint,
-            modifier = Modifier.padding(start = 48.dp, top = 6.dp, end = 8.dp),
-        )
     }
 }
 
-/** Compact tier switch for follow-ups: current tier + rate, tap to change. */
+/** Compact tier switch for replies: current tier + rate, tap to change. */
 @Composable
 private fun TierMenu(tier: Tier, s: AskUiState, onSelect: (Tier) -> Unit) {
     var open by remember { mutableStateOf(false) }
     Box {
         Row(
             Modifier.clip(MaterialTheme.shapes.small).clickable(onClickLabel = "Change answer level") { open = true }
-                .border(1.dp, Ink.Line, MaterialTheme.shapes.small).padding(horizontal = 10.dp, vertical = 6.dp),
+                .border(BorderStroke(1.dp, Ink.Line), MaterialTheme.shapes.small).padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TierTag(tier)
@@ -395,7 +315,7 @@ private fun TierMenu(tier: Tier, s: AskUiState, onSelect: (Tier) -> Unit) {
     }
 }
 
-private fun Context.copy(text: String) {
+internal fun Context.copy(text: String) {
     getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Answer", text))
     // Android 13+ shows its own clipboard confirmation.
     if (android.os.Build.VERSION.SDK_INT < 33) Toast.makeText(this, "Answer copied", Toast.LENGTH_SHORT).show()

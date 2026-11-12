@@ -49,6 +49,23 @@ data class ChatResponse(
     @SerialName("wallet_balance_inr") val walletBalanceInr: Double,
     /** The model hit its length limit and the reply stops mid-way. Optional while the backend rolls it out. */
     val truncated: Boolean = false,
+    /** Human-readable name of the model that answered. Optional while the backend rolls it out. */
+    @SerialName("model_name") val modelName: String? = null,
+)
+
+/** GET /v1/history/{conversation_id}: a saved conversation as question/answer pairs. */
+@Serializable
+data class ThreadExchange(
+    val question: String,
+    val answer: String,
+    val tier: String,
+    @SerialName("cost_inr") val costInr: Double = 0.0,
+)
+
+@Serializable
+data class ThreadResponse(
+    @SerialName("conversation_id") val conversationId: String,
+    val exchanges: List<ThreadExchange> = emptyList(),
 )
 
 /** POST /v1/auth/signup and /v1/auth/login. */

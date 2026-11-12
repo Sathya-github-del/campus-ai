@@ -32,6 +32,8 @@ interface AnswerApi {
     /** Always a generic success (it never reveals whether the email has an account). */
     suspend fun forgotPassword(email: String)
     suspend fun history(token: String): HistoryPage
+    /** One saved conversation, to reopen it. 404 = gone or not this user's. */
+    suspend fun thread(token: String, conversationId: String): ThreadResponse
     suspend fun deleteHistory(token: String, conversationId: String)
     suspend fun deleteAccount(token: String)
 }
@@ -157,6 +159,9 @@ class ApiClient(
         }
         return page
     }
+
+    override suspend fun thread(token: String, conversationId: String): ThreadResponse =
+        decode(request("GET", "/v1/history/" + URLEncoder.encode(conversationId, "UTF-8").replace("+", "%20"), token))
 
     override suspend fun deleteHistory(token: String, conversationId: String) {
         request("DELETE", "/v1/history/" + URLEncoder.encode(conversationId, "UTF-8").replace("+", "%20"), token)

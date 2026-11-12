@@ -179,6 +179,27 @@ def test_history_lists_only_the_callers_conversations_newest_first(client, fake)
     assert [c["conversation_id"] for c in other] == [theirs["conversation_id"]]
 
 
+def test_thread_reopens_a_saved_conversation(client, fake):
+    a, b = signup(client, "a@example.com"), signup(client, "b@example.com")
+    top_up(client, a, 100)
+    first = ask(client, a, "Explain photosynthesis")
+    conv = first["conversation_id"]
+    fake.reply = "Second answer"
+    second = ask(client, a, "And respiration?", conv)
+
+    r = client.get(f"/v1/history/{conv}", headers=a)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["conversation_id"] == conv
+    assert [(e["question"], e["answer"], e["tier"]) for e in body["exchanges"]] == [
+        ("Explain photosynthesis", "Step 1: ...", "fast"), ("And respiration?", "Second answer", "fast")]
+    assert [e["cost_inr"] for e in body["exchanges"]] == [first["cost_inr"], second["cost_inr"]]
+
+    assert client.get(f"/v1/history/{conv}", headers=b).status_code == 404  # someone else's
+    assert client.get("/v1/history/conv_nope", headers=a).status_code == 404
+    assert client.get(f"/v1/history/{conv}").status_code == 401
+
+
 def test_history_limit_and_auth(client):
     h = signup(client)
     top_up(client, h, 100)

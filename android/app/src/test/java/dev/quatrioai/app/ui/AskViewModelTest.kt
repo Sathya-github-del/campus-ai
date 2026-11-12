@@ -79,6 +79,15 @@ class AskViewModelTest {
     }
 
     @Test
+    fun answerCarriesTheModelThatAnsweredIt() = runTest {
+        val vm = registeredWith(5.0)
+        api.modelName = "Nemotron 3.5 Super VL"
+        vm.setDraft("explain photosynthesis")
+        vm.ask()
+        assertEquals("Nemotron 3.5 Super VL", vm.state.value.openThread!!.first.modelName)
+    }
+
+    @Test
     fun estimateFollowsTheTypedQuestionAndTheThread() = runTest {
         val vm = registeredWith(5.0)
         vm.setTier(Tier.SMART)

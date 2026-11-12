@@ -32,11 +32,12 @@ private object Routes {
     const val CAMERA = "camera"
     const val PROFILE = "profile"
     const val LEGAL = "legal/{doc}"
+    const val ABOUT = "about"
 
     fun auth(mode: AuthMode, expired: Boolean = false) = "auth?mode=${mode.name.lowercase()}&expired=$expired"
     fun legal(doc: LegalDoc) = "legal/${doc.route}"
     /** Screens that make sense without a session (everything else needs a guest or account token). */
-    fun isPublic(route: String?) = route == WELCOME || route == AUTH || route == LEGAL
+    fun isPublic(route: String?) = route == WELCOME || route == AUTH || route == LEGAL || route == ABOUT
 }
 
 /** Clears the whole back stack and opens [route], so Back can't return to a signed-out or stale screen. */
@@ -118,17 +119,25 @@ fun AppRoot(app: QuatrioAiApp) {
             WalletScreen(vm, onBack = { nav.popBackStack() })
         }
         composable(Routes.PROFILE) {
-            val vm: ProfileViewModel = viewModel(factory = viewModelFactory { initializer { ProfileViewModel(app.backend) } })
+            val vm: ProfileViewModel = viewModel(factory = viewModelFactory { initializer { ProfileViewModel(app.backend, app.historyTags) } })
             ProfileScreen(
                 vm,
                 onBack = { nav.popBackStack() },
                 onOpenWallet = { nav.navigate(Routes.WALLET) { launchSingleTop = true } },
                 onOpenAuth = { nav.navigate(Routes.auth(AuthMode.SIGNUP)) },
                 onOpenLegal = openLegal,
+                onOpenAbout = { nav.navigate(Routes.ABOUT) { launchSingleTop = true } },
+                onOpenConversation = { id ->
+                    askVm.openSaved(id)
+                    nav.popBackStack(Routes.ASK, inclusive = false)
+                },
             )
         }
         composable(Routes.LEGAL, arguments = listOf(navArgument("doc") { type = NavType.StringType })) { entry ->
             LegalScreen(LegalDoc.fromRoute(entry.arguments?.getString("doc")), onBack = { nav.popBackStack() })
+        }
+        composable(Routes.ABOUT) {
+            AboutScreen(onBack = { nav.popBackStack() })
         }
         composable(Routes.CAMERA) {
             CameraScreen(

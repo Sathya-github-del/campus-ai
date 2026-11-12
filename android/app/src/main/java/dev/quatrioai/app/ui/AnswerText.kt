@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -19,6 +20,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,7 +36,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -53,6 +58,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import dev.quatrioai.app.R
 import dev.quatrioai.app.core.Latex
 import dev.quatrioai.app.core.MathNode
 import dev.quatrioai.app.core.MathRun
@@ -154,8 +160,18 @@ private fun DashedRule() {
 @Composable
 private fun CodeBlock(b: MdBlock.Code) {
     val shape = MaterialTheme.shapes.small
+    val context = LocalContext.current
     Column(Modifier.fillMaxWidth().clip(shape).background(Ink.Panel).border(1.dp, Ink.LineSoft, shape).padding(vertical = 10.dp)) {
-        b.lang?.let { Legend(it, Modifier.padding(start = 12.dp, bottom = 6.dp), color = Lit.Amber.copy(alpha = 0.7f)) }
+        Row(
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, bottom = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            b.lang?.let { Legend(it, color = Lit.Amber.copy(alpha = 0.7f)) } ?: Spacer(Modifier.width(1.dp))
+            IconButton(onClick = { context.copy(b.text) }, modifier = Modifier.size(32.dp)) {
+                Icon(painterResource(R.drawable.ic_copy), "Copy code", tint = Ink.PaperDim, modifier = Modifier.size(16.dp))
+            }
+        }
         Text(
             b.text,
             style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.5.sp, lineHeight = 20.sp, color = Color(0xFFEBD9C3)),

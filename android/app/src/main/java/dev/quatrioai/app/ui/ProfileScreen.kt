@@ -1,11 +1,14 @@
 package dev.quatrioai.app.ui
 
+import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -33,22 +36,30 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.quatrioai.app.BuildConfig
 import dev.quatrioai.app.R
+import dev.quatrioai.app.core.HistoryExport
 import dev.quatrioai.app.core.HistoryText
 import dev.quatrioai.app.core.LegalDoc
 import dev.quatrioai.app.core.Money
 import dev.quatrioai.app.data.HistoryItem
+import dev.quatrioai.app.data.PRESET_HISTORY_TAGS
+import java.io.File
 
 /**
  * Profile: who you're signed in as and your balance, your saved history as fare receipts (each
@@ -61,8 +72,11 @@ fun ProfileScreen(
     onOpenWallet: () -> Unit,
     onOpenAuth: () -> Unit,
     onOpenLegal: (LegalDoc) -> Unit,
+    onOpenAbout: () -> Unit,
+    onOpenConversation: (String) -> Unit,
 ) {
     val s by vm.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     Column(Modifier.fillMaxSize().background(Ink.Bg).statusBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(painterResource(R.drawable.ic_back), "Back", tint = Ink.Paper) }
@@ -76,14 +90,31 @@ fun ProfileScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Legend("History")
                 Spacer(Modifier.weight(1f))
-                if (!s.history.isNullOrEmpty()) Legend("${Money.cost(s.historyTotalInr)} total", color = Ink.PaperDim)
+                if (!s.history.isNullOrEmpty()) {
+                    Legend("${Money.cost(s.historyTotalInr)} total", color = Ink.PaperDim)
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(onClick = { exportHistory(context, vm.exportMarkdown()) }, modifier = Modifier.size(28.dp)) {
+                        Icon(painterResource(R.drawable.ic_doc), "Export as notes", tint = Lit.Tangerine, modifier = Modifier.size(16.dp))
+                    }
+                }
             }
             Spacer(Modifier.height(8.dp))
             s.error?.let {
                 ErrorBanner(it, vm::dismissError)
                 Spacer(Modifier.height(8.dp))
             }
-            HistorySection(s, vm)
+            if (!s.history.isNullOrEmpty()) {
+                OutlinedTextField(
+                    value = s.searchQuery,
+                    onValueChange = vm::setSearchQuery,
+                    singleLine = true,
+                    placeholder = { Text("Search your history or tags", color = Ink.PaperFaint) },
+                    colors = nightFieldColors(),
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                )
+            }
+            HistorySection(s, vm, onOpenConversation)
 
             Spacer(Modifier.height(28.dp))
             Legend("Terms & privacy")
@@ -91,6 +122,11 @@ fun ProfileScreen(
             LinkRow("Terms of Service", "Draft") { onOpenLegal(LegalDoc.TERMS) }
             Spacer(Modifier.height(8.dp))
             LinkRow("Privacy Policy", "Draft") { onOpenLegal(LegalDoc.PRIVACY) }
+
+            Spacer(Modifier.height(28.dp))
+            Legend("About")
+            Spacer(Modifier.height(8.dp))
+            LinkRow("About Quatrio AI", "", onOpenAbout)
 
             Spacer(Modifier.height(28.dp))
             Legend("Account")
@@ -165,8 +201,8 @@ private fun IdentityCard(s: ProfileUiState, onOpenWallet: () -> Unit, onOpenAuth
 }
 
 @Composable
-private fun HistorySection(s: ProfileUiState, vm: ProfileViewModel) {
-    val items = s.history
+private fun HistorySection(s: ProfileUiState, vm: ProfileViewModel, onOpen: (String) -> Unit) {
+    val items = s.filteredHistory
     when {
         items == null && s.loadError == null -> Row(Modifier.fillMaxWidth().padding(vertical = 18.dp), horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically) {
@@ -180,43 +216,138 @@ private fun HistorySection(s: ProfileUiState, vm: ProfileViewModel) {
             Text("Couldn't load your history. ${s.loadError}", style = MaterialTheme.typography.bodyMedium, color = Ink.PaperDim)
             TextButton(onClick = vm::load, enabled = !s.loading) { Text(if (s.loading) "Trying…" else "Try again", color = Lit.Tangerine) }
         }
-        items.isEmpty() -> Text(
+        items.isEmpty() && s.history.isNullOrEmpty() -> Text(
             "No saved questions yet. Everything you ask shows up here with its fare.",
             style = MaterialTheme.typography.bodyMedium, color = Ink.PaperFaint,
             modifier = Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).border(1.dp, Ink.LineSoft, MaterialTheme.shapes.medium).padding(14.dp),
         )
+        items.isEmpty() -> Text(
+            "No saved questions match “${s.searchQuery.trim()}”.",
+            style = MaterialTheme.typography.bodyMedium, color = Ink.PaperFaint,
+            modifier = Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).border(1.dp, Ink.LineSoft, MaterialTheme.shapes.medium).padding(14.dp),
+        )
         else -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items.forEach { item -> HistoryRow(item, deleting = item.conversationId in s.deleting, onDelete = { vm.askDelete(item) }) }
+            items.forEach { item ->
+                HistoryRow(
+                    item,
+                    tag = s.tags[item.conversationId],
+                    deleting = item.conversationId in s.deleting,
+                    onOpen = { onOpen(item.conversationId) },
+                    onDelete = { vm.askDelete(item) },
+                    onSetTag = { tag -> vm.setTag(item, tag) },
+                )
+            }
         }
     }
 }
 
-/** A saved question as a compact fare receipt (same look as home's "This session" rows), with a delete key. */
+/** A saved question as a compact fare receipt (same look as home's "This session" rows), with a
+ * delete key and a tap-to-pick local tag (never sent to the server). */
 @Composable
-private fun HistoryRow(item: HistoryItem, deleting: Boolean, onDelete: () -> Unit) {
-    Row(
+private fun HistoryRow(item: HistoryItem, tag: String?, deleting: Boolean, onOpen: () -> Unit, onDelete: () -> Unit, onSetTag: (String?) -> Unit) {
+    var pickingTag by remember { mutableStateOf(false) }
+    Column(
         Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).background(Ink.Surface)
             .border(1.dp, Ink.LineSoft, MaterialTheme.shapes.medium)
-            .padding(start = 14.dp, end = 2.dp, top = 12.dp, bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(start = 14.dp, end = 2.dp, top = 12.dp, bottom = 10.dp),
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(HistoryText.question(item.firstQuestion), style = MaterialTheme.typography.bodyMedium,
-                color = if (deleting) Ink.PaperFaint else Ink.Paper, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
-                item.tier?.let { TierTag(it); Spacer(Modifier.width(8.dp)) }
-                Legend(listOf(HistoryText.parts(item.parts), HistoryText.date(item.createdAt)).filter { it.isNotEmpty() }.joinToString("  ·  "))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f).clip(MaterialTheme.shapes.extraSmall).clickable(enabled = !deleting, onClickLabel = "Open this conversation", onClick = onOpen)) {
+                Text(HistoryText.question(item.firstQuestion), style = MaterialTheme.typography.bodyMedium,
+                    color = if (deleting) Ink.PaperFaint else Ink.Paper, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 6.dp)) {
+                    item.tier?.let { TierTag(it); Spacer(Modifier.width(8.dp)) }
+                    Legend(listOf(HistoryText.parts(item.parts), HistoryText.date(item.createdAt)).filter { it.isNotEmpty() }.joinToString("  ·  "))
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            Fare(item.totalCostInr, 14.dp)
+            Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+                if (deleting) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Lit.Vermilion)
+                else IconButton(onClick = onDelete) {
+                    Icon(painterResource(R.drawable.ic_delete), "Delete this question from history", tint = Ink.PaperFaint, modifier = Modifier.size(20.dp))
+                }
             }
         }
-        Spacer(Modifier.width(10.dp))
-        Fare(item.totalCostInr, 14.dp)
-        Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
-            if (deleting) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Lit.Vermilion)
-            else IconButton(onClick = onDelete) {
-                Icon(painterResource(R.drawable.ic_delete), "Delete this question from history", tint = Ink.PaperFaint, modifier = Modifier.size(20.dp))
+        Row(
+            Modifier.padding(top = 4.dp, end = 14.dp).clip(MaterialTheme.shapes.extraSmall).clickable { pickingTag = true }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (tag != null) {
+                Text(tag, style = MaterialTheme.typography.labelMedium, color = Lit.Amber)
+            } else {
+                Icon(painterResource(R.drawable.ic_doc), null, tint = Ink.PaperFaint, modifier = Modifier.size(13.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Add tag", style = MaterialTheme.typography.labelMedium, color = Ink.PaperFaint)
             }
         }
     }
+    if (pickingTag) TagPickerDialog(current = tag, onPick = { onSetTag(it); pickingTag = false }, onDismiss = { pickingTag = false })
+}
+
+@Composable
+private fun TagPickerDialog(current: String?, onPick: (String?) -> Unit, onDismiss: () -> Unit) {
+    var custom by remember { mutableStateOf(current.takeUnless { it in PRESET_HISTORY_TAGS }.orEmpty()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Ink.Raised,
+        title = { Text("Tag this question") },
+        text = {
+            Column {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PRESET_HISTORY_TAGS.forEach { preset ->
+                        Pill(preset, selected = preset == current, onClick = { onPick(preset) })
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = custom,
+                    onValueChange = { custom = it },
+                    singleLine = true,
+                    placeholder = { Text("Or type your own", color = Ink.PaperFaint) },
+                    colors = nightFieldColors(),
+                    shape = MaterialTheme.shapes.medium,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (current != null) {
+                    TextButton(onClick = { onPick(null) }, modifier = Modifier.padding(top = 4.dp)) {
+                        Text("Remove tag", color = Lit.Vermilion)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onPick(custom.trim().ifBlank { null }) }, colors = ButtonDefaults.buttonColors(containerColor = Lit.Tangerine)) {
+                Text("Save", color = Color(0xFF2B1600))
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** Small selectable pill, same visual language as a chip picker (no existing shared Pill component here). */
+@Composable
+private fun Pill(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.clip(MaterialTheme.shapes.extraSmall)
+            .background(if (selected) Lit.Tangerine.copy(alpha = 0.18f) else Ink.Raised2)
+            .border(1.dp, if (selected) Lit.Tangerine else Ink.LineSoft, MaterialTheme.shapes.extraSmall)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    ) { Text(label, style = MaterialTheme.typography.labelMedium, color = if (selected) Lit.Tangerine else Ink.PaperDim) }
+}
+
+/** Writes [markdown] to a cache file and opens the share sheet. */
+private fun exportHistory(context: Context, markdown: String) {
+    val file = File(context.cacheDir, HistoryExport.FILE_NAME).apply { writeText(markdown) }
+    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/markdown"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(intent, "Export as notes"))
 }
 
 @Composable

@@ -179,8 +179,9 @@ def test_chat_deducts_metered_cost(client, fake):
                                       "conversation_id": None, "image_base64": None}, headers=h)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) == {"reply", "conversation_id", "cost_inr", "wallet_balance_inr", "truncated"}
+    assert set(body) == {"reply", "conversation_id", "cost_inr", "wallet_balance_inr", "truncated", "model_name"}
     assert body["truncated"] is False
+    assert body["model_name"] == "anthropic/claude-top"  # expert band's only eligible model in LIVE_MODELS
     units = usd_to_units(Decimal("0.001"), Decimal("93"), Decimal("5"))  # 0.093/0.95 = Rs 0.0979
     assert units == 97895
     assert body["cost_inr"] == 0.0979

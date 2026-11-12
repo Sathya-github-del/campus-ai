@@ -109,6 +109,24 @@ def list_conversations(db: Database, user_id: str, limit: int) -> list[Conversat
     return out
 
 
+@dataclass
+class ConversationMessage:
+    role: str
+    content: str
+    tier: str | None
+    cost_units: int  # 0 for user turns
+
+
+def get_conversation(db: Database, user_id: str, conversation_id: str) -> list[ConversationMessage] | None:
+    """Every turn of one conversation in order, or None if it doesn't exist or isn't user_id's."""
+    owner = db.one("SELECT user_id FROM conversations WHERE id=?", (conversation_id,))
+    if owner is None or owner["user_id"] != user_id:
+        return None
+    rows = db.q("SELECT role, content, tier, COALESCE(charge_units, 0) AS charge_units FROM messages "
+                "WHERE conversation_id=? ORDER BY id", (conversation_id,))
+    return [ConversationMessage(r["role"], r["content"], r["tier"], int(r["charge_units"])) for r in rows]
+
+
 def delete_conversation(db: Database, user_id: str, conversation_id: str) -> bool:
     """Delete one conversation and its messages if it belongs to user_id. False if it doesn't exist or
     isn't theirs (the caller answers 404 either way). Ledger rows that reference it are kept: they are

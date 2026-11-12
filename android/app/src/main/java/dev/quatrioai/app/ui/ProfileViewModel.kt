@@ -3,8 +3,10 @@ package dev.quatrioai.app.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.quatrioai.app.core.ErrorText
+import dev.quatrioai.app.core.HistoryExport
 import dev.quatrioai.app.data.Backend
 import dev.quatrioai.app.data.HistoryItem
+import dev.quatrioai.app.data.HistoryTagsStore
 import dev.quatrioai.app.data.Session
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,10 +34,25 @@ data class ProfileUiState(
     val error: String? = null,
     val confirmLogout: Boolean = false,
     val deleteAccount: DeleteAccountState? = null,
+    /** One free-text tag per conversation, local to this phone only. Keyed by conversationId. */
+    val tags: Map<String, String> = emptyMap(),
+    val searchQuery: String = "",
 ) {
     val isGuest: Boolean get() = session == Session.Guest
     val email: String? get() = (session as? Session.Account)?.email
     val historyTotalInr: Double get() = history.orEmpty().sumOf { it.totalCostInr }
+
+    /** [history] filtered by [searchQuery] against the question text or its tag; null while loading. */
+    val filteredHistory: List<HistoryItem>?
+        get() {
+            val q = searchQuery.trim()
+            val list = history ?: return null
+            if (q.isBlank()) return list
+            return list.filter { item ->
+                item.firstQuestion.contains(q, ignoreCase = true) ||
+                    tags[item.conversationId]?.contains(q, ignoreCase = true) == true
+            }
+        }
 }
 
 /**
@@ -43,7 +60,7 @@ data class ProfileUiState(
  * log out, and delete account. Signing out (or deleting the account) flips [Backend.session] to
  * SignedOut, which the app root turns into "back to the login screen".
  */
-class ProfileViewModel(private val backend: Backend) : ViewModel() {
+class ProfileViewModel(private val backend: Backend, private val tagsStore: HistoryTagsStore) : ViewModel() {
     companion object {
         /** Typed to arm "Delete account": a deliberate act, never a single accidental tap. */
         const val CONFIRM_WORD = "DELETE"
@@ -55,8 +72,19 @@ class ProfileViewModel(private val backend: Backend) : ViewModel() {
     init {
         viewModelScope.launch { backend.session.collect { s -> _state.update { it.copy(session = s) } } }
         viewModelScope.launch { backend.balance.collect { b -> _state.update { it.copy(balance = b) } } }
+        viewModelScope.launch { _state.update { it.copy(tags = tagsStore.allTags()) } }
         load()
     }
+
+    fun setSearchQuery(query: String) = _state.update { it.copy(searchQuery = query) }
+
+    fun setTag(item: HistoryItem, tag: String?) {
+        _state.update { it.copy(tags = if (tag.isNullOrBlank()) it.tags - item.conversationId else it.tags + (item.conversationId to tag)) }
+        viewModelScope.launch { tagsStore.setTag(item.conversationId, tag) }
+    }
+
+    /** Markdown for "Export as notes", built from whatever the search currently shows. */
+    fun exportMarkdown(): String = HistoryExport.markdown(_state.value.filteredHistory.orEmpty(), _state.value.tags)
 
     fun load() {
         if (_state.value.loading) return
@@ -85,7 +113,10 @@ class ProfileViewModel(private val backend: Backend) : ViewModel() {
         viewModelScope.launch {
             try {
                 backend.deleteHistory(id)
-                _state.update { s -> s.copy(history = s.history?.filterNot { it.conversationId == id }, deleting = s.deleting - id) }
+                tagsStore.setTag(id, null)
+                _state.update { s ->
+                    s.copy(history = s.history?.filterNot { it.conversationId == id }, deleting = s.deleting - id, tags = s.tags - id)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
