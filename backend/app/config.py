@@ -74,6 +74,8 @@ class Settings:
     dev_mode: bool = True
     payment_provider: str = "mock"
     public_base_url: str = "http://localhost:8000"
+    # Browser origins allowed to call the API (the website). Empty = no CORS headers; the phone app doesn't need them.
+    cors_origins: tuple[str, ...] = ()
 
     # --- abuse limits (per token unless noted) ---
     rate_limit_per_minute: int = 60
@@ -146,6 +148,7 @@ class Settings:
             dev_mode=_bool("DEV_MODE", True),
             payment_provider=_env("PAYMENT_PROVIDER", "mock").lower(),
             public_base_url=_env("PUBLIC_BASE_URL", cls.public_base_url).rstrip("/"),
+            cors_origins=tuple(o.strip().rstrip("/") for o in _env("CORS_ORIGINS", "").split(",") if o.strip()),
             rate_limit_per_minute=_int("RATE_LIMIT_PER_MINUTE", 60),
             chat_rate_limit_per_minute=_int("CHAT_RATE_LIMIT_PER_MINUTE", 12),
             register_limit_per_hour_per_ip=_int("REGISTER_LIMIT_PER_HOUR_PER_IP", 20),

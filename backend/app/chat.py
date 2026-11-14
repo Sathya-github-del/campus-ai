@@ -41,14 +41,18 @@ from .wallet import Wallet, new_id
 log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
-    "You are the study helper inside a learning app for students in India (school, college and "
-    "competitive-exam preparation). Explain step by step and check understanding, so the student "
-    "learns the method, not just the answer. Match the student's language: reply in English, Hindi or "
-    "Hinglish as they write. Keep answers focused and reasonably short; offer to go deeper. "
-    "When the student sends a photo of a problem, first restate what you read from it, then solve it. "
+    "You are QUATRIO AI, a friendly, capable and honest assistant for anyone: students, professionals, "
+    "founders, creators, parents, or just someone curious. Reply to what the person actually asked, in "
+    "the way a thoughtful person would. A greeting gets a short, warm greeting back, and a quick question "
+    "gets a quick answer. Never assume who they are, what they do or what they want to learn, and never "
+    "introduce yourself as a tutor, teacher or study helper unless they ask for that. "
+    "Match their language: reply in English, Hindi or Hinglish as they write. Keep answers focused and "
+    "reasonably short, and offer to go deeper. When the topic needs it (maths, code, reasoning, a "
+    "how-to), explain step by step. "
+    "When they send a photo, first say what you read from it, then help with it. If something in a photo "
+    "is unreadable, say so instead of guessing. "
     "Use simple Markdown. Write maths in plain text (for example: x^2 + 3x - 4 = 0, sqrt(2), 3/4) "
-    "rather than LaTeX. If something in a photo is unreadable, say so instead of guessing. "
-    "Be honest when you are unsure."
+    "rather than LaTeX. Be honest when you are unsure."
 )
 IMAGE_ONLY_PROMPT = "Please help me with the problem in this photo."
 
@@ -344,12 +348,15 @@ class ChatService:
                     balance_inr=paise_to_inr(available_paise), required_inr=paise_to_inr(required), tier=tier)
 
         hold_units = worst_units(max_out)
-        hold_paise = max(1, units_to_paise_ceil(hold_units))
-        hold_id = self.wallet.reserve(user_id, hold_paise)
-        if hold_id is None:  # balance changed under us (another request in flight)
-            raise APIError(402, "insufficient_balance", "Your balance is too low for this message. Top up to continue.",
-                           balance_inr=paise_to_inr(self.wallet.available_paise(user_id)),
-                           required_inr=paise_to_inr(hold_paise), tier=tier)
+        # A free model has a worst case of zero: there is nothing to reserve, so a ₹0 wallet can still ask.
+        hold_paise = units_to_paise_ceil(hold_units) if hold_units > 0 else 0
+        hold_id = None
+        if hold_paise > 0:
+            hold_id = self.wallet.reserve(user_id, hold_paise)
+            if hold_id is None:  # balance changed under us (another request in flight)
+                raise APIError(402, "insufficient_balance", "Your balance is too low for this message. Top up to continue.",
+                               balance_inr=paise_to_inr(self.wallet.available_paise(user_id)),
+                               required_inr=paise_to_inr(hold_paise), tier=tier)
 
         conv_id = conversation_id or new_id("conv")
         payload = {
@@ -368,10 +375,12 @@ class ChatService:
             reply = _reply_text(body)
             truncated = _was_truncated(body)
         except UpstreamError as e:
-            self.wallet.release(hold_id)
+            if hold_id:
+                self.wallet.release(hold_id)
             raise _map_upstream(e)
         except BaseException:
-            self.wallet.release(hold_id)
+            if hold_id:
+                self.wallet.release(hold_id)
             raise
 
         usage = body.get("usage") or {}

@@ -1,4 +1,5 @@
 """End-to-end API tests against the exact client contract (fake OpenRouter, real SQLite)."""
+import dataclasses
 from decimal import Decimal
 
 import pytest
@@ -359,3 +360,54 @@ def test_truncated_flag_edge_cases(client, fake, finish, native, expected):
     r = client.post("/v1/chat", json={"tier": "fast", "message": "hi"}, headers=h)
     assert r.status_code == 200, r.text
     assert r.json()["truncated"] is expected
+
+
+def test_free_model_chat_works_with_a_zero_balance(settings, fake):
+    """A pinned free model costs nothing, so there is nothing to hold: a brand-new ₹0 wallet can ask."""
+    from fastapi.testclient import TestClient
+    from app.api import create_app
+    s = dataclasses.replace(settings, model_pins={"fast": "google/flash-vision:free"})
+    fake.cost = Decimal(0)
+    with TestClient(create_app(s, client=fake)) as client:
+        h = register(client)
+        r = client.post("/v1/chat", json={"tier": "fast", "message": "hi"}, headers=h)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["cost_inr"] == 0 and body["wallet_balance_inr"] == 0
+        assert fake.calls[0]["model"] == "google/flash-vision:free"
+        assert client.app.state.db.one("SELECT COUNT(*) AS n FROM holds")["n"] == 0  # nothing left reserved
+        # a follow-up in the same conversation works too, and priced tiers still need a balance
+        again = client.post("/v1/chat", json={"tier": "fast", "message": "more", "conversation_id": body["conversation_id"]}, headers=h)
+        assert again.status_code == 200
+        assert client.post("/v1/chat", json={"tier": "expert", "message": "hi"}, headers=h).status_code == 402
+
+
+# ------------------------------------------------------------------ CORS (website)
+
+def test_cors_is_off_unless_configured(client):
+    r = client.get("/healthz", headers={"Origin": "https://quatrio.example"})
+    assert "access-control-allow-origin" not in r.headers
+
+
+def test_cors_allows_only_the_configured_website(settings, fake):
+    s = dataclasses.replace(settings, cors_origins=("https://quatrio.example",))
+    with TestClient(create_app(s, client=fake)) as c:
+        pre = c.options("/v1/chat", headers={
+            "Origin": "https://quatrio.example",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        })
+        assert pre.status_code == 200
+        assert pre.headers["access-control-allow-origin"] == "https://quatrio.example"
+        assert "authorization" in pre.headers["access-control-allow-headers"].lower()
+
+        ok = c.get("/healthz", headers={"Origin": "https://quatrio.example"})
+        assert ok.headers["access-control-allow-origin"] == "https://quatrio.example"
+
+        other = c.get("/healthz", headers={"Origin": "https://evil.example"})
+        assert "access-control-allow-origin" not in other.headers
+
+
+def test_cors_origins_parsed_from_env(monkeypatch):
+    monkeypatch.setenv("CORS_ORIGINS", " https://a.example/ , https://b.example ,")
+    assert Settings.from_env().cors_origins == ("https://a.example", "https://b.example")

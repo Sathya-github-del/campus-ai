@@ -92,13 +92,14 @@ class Wallet:
         # Single statement, and releasing only ever increases what is spendable: no lock needed.
         self.db.x("DELETE FROM holds WHERE id=?", (hold_id,))
 
-    def settle(self, c: Tx, user_id: str, hold_id: str, cost_units: int, ref: str,
+    def settle(self, c: Tx, user_id: str, hold_id: str | None, cost_units: int, ref: str,
                absorbed_units: int = 0) -> ChargeResult:
-        """Release the hold and debit the metered cost. Call inside db.tx() so it commits together with
-        the conversation rows it pays for."""
+        """Release the hold (none for a free call) and debit the metered cost. Call inside db.tx() so it
+        commits together with the conversation rows it pays for."""
         now = time.time()
         row = self._lock_wallet(c, user_id)  # lock before reading: the UPDATE below writes absolute values
-        c.execute("DELETE FROM holds WHERE id=?", (hold_id,))
+        if hold_id:
+            c.execute("DELETE FROM holds WHERE id=?", (hold_id,))
         balance, credit, taken, shortfall = apply_charge(row[0], row[1], cost_units)
         shortfall += absorbed_units  # cost the platform ate (recorded for reconciliation)
         c.execute("UPDATE wallets SET balance_paise=?, credit_units=? WHERE user_id=?", (balance, credit, user_id))

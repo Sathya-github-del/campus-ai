@@ -17,3 +17,6 @@ android/debug.keystore
 
 # secrets
 secrets/
+
+# The website is its own repository (pavoai-web); keep it out of this one.
+/web/

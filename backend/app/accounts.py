@@ -2,9 +2,9 @@
 and account deletion.
 
 Tokens: every account, anonymous or email, authenticates the same way. A random bearer token is issued
-and only its SHA-256 is stored in users.token_hash (api.resolve_user looks it up). An account holds one
-token at a time, so a successful login issues a new token and the previous one stops working (signing
-in on a new phone signs the old one out). See NOTES.md §3.
+and only its SHA-256 is stored (api.resolve_user looks it up). The token an account is created with lives
+in users.token_hash; every later email login adds its own row in `sessions`, so the phone and the website
+stay signed in together. Each account keeps its newest MAX_SESSIONS logins. See NOTES.md §3.
 
 Passwords: argon2id (argon2-cffi) with OWASP's low-memory profile (19 MiB, 2 passes, 1 lane), not the
 library default of 64 MiB: Render's free instance has 512 MB and a few logins at once must not exhaust
@@ -26,6 +26,7 @@ from .wallet import new_id
 _hasher = PasswordHasher(time_cost=2, memory_cost=19 * 1024, parallelism=1)
 
 MIN_PASSWORD_CHARS = 8
+MAX_SESSIONS = 20  # signed-in devices kept per account; the oldest login is dropped beyond this
 MAX_PASSWORD_CHARS = 256  # bounds hashing work per request
 MAX_EMAIL_CHARS = 254
 # Deliberately loose: one @, something on each side, a dot in the domain, no spaces. Whether the
@@ -164,4 +165,5 @@ def delete_account(db: Database, user_id: str) -> None:
         c.execute("DELETE FROM ledger WHERE user_id=?", (user_id,))
         c.execute("DELETE FROM topups WHERE user_id=?", (user_id,))
         c.execute("DELETE FROM wallets WHERE user_id=?", (user_id,))
+        c.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
         c.execute("DELETE FROM users WHERE id=?", (user_id,))

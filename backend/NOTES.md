@@ -68,10 +68,9 @@ the same token mechanism (`users.token_hash`), so the auth check didn't change.
   page or deep link. Until then, don't tell testers the reset link works.
 - **No email verification.** Anyone can sign up with someone else's address, and the real owner then
   gets `409 email_taken`. Fix together with the reset email (same sending path).
-- **One token per account, no expiry.** Login replaces the stored token, so signing in on a second
-  phone signs the first one out (it gets `401 unauthorized`, message "You're signed out. Please sign
-  in again."). Tokens never expire. A `sessions` table (several tokens per user, expiry, "sign out
-  everywhere") is the next step; it means changing `resolve_user` in `api.py`.
+- **Several sign-ins per account, no expiry.** Each email login adds a row in `sessions` (newest 20 kept),
+  so the phone and the website stay signed in together. `POST /v1/auth/logout` ends one device. Tokens
+  never expire, and there is no "sign out everywhere" yet.
 - **No way to upgrade an anonymous account.** A tester with an anonymous token and a balance who then
   signs up gets a *new, empty* account. If anonymous accounts stay in the app, add "attach email to
   this account" (signup called with the anonymous Bearer token).

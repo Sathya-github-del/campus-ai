@@ -37,3 +37,5 @@ services:
         sync: false
       - key: MAX_OUTPUT_TOKENS
         sync: false
+      - key: CORS_ORIGINS         # the website's address, e.g. https://pavoai.in (no trailing slash). The website lives in its own repository.
+        sync: false

@@ -126,7 +126,8 @@ connection before use, so stale connections after a suspend are replaced automat
 |---|---|---|---|
 | `POST /v1/auth/register` | – | `{}` (or no body) | `{"token"}` (anonymous account; kept for quick testing) |
 | `POST /v1/auth/signup` | – | `{"email", "password"}` (password 8–256 chars) | `{"token"}` |
-| `POST /v1/auth/login` | – | `{"email", "password"}` | `{"token"}` (signs out the account's previous token) |
+| `POST /v1/auth/login` | – | `{"email", "password"}` | `{"token"}` (adds a sign-in; the account's other devices stay signed in) |
+| `POST /v1/auth/logout` | Bearer | – | `204`; ends only this device's sign-in |
 | `POST /v1/auth/forgot-password` | – | `{"email"}` | `{"message"}`, always the same text (**stub: no email is sent yet**) |
 | `GET /v1/history?limit=50` | Bearer | `limit` 1–200, default 50 | `{"conversations": [{"conversation_id", "first_question", "created_at", "updated_at", "questions", "cost_inr"}]}` |
 | `DELETE /v1/history/{conversation_id}` | Bearer | – | `204`, empty body |
@@ -146,8 +147,8 @@ signal is missing or ambiguous. The student is still charged for the tokens that
 **Accounts.** Email and anonymous accounts use the same bearer tokens (random, only the SHA-256 is
 stored). Emails are trimmed and lower-cased; signup with an existing email is `409 email_taken`.
 Login failures are always `401 invalid_credentials` / "Incorrect email or password." whether or not the
-email exists. An account has one token at a time: logging in on a new device signs the old one out
-(its next request gets `401 unauthorized`). Passwords are hashed with argon2id.
+email exists. An account can be signed in on several devices at once (the phone and the website share one wallet and
+the same chats); each account keeps its newest 20 sign-ins. Passwords are hashed with argon2id.
 
 **History.** Conversations are listed most recently active first (`updated_at` descending).
 `first_question` is the conversation's first question, cut to 140 characters with a trailing `…`.

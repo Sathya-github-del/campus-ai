@@ -37,6 +37,15 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT,
   password_hash TEXT);
 
+-- Extra sign-ins for an account (one row per device that logged in with email + password). The token a
+-- new account is created with stays in users.token_hash; every later login adds a row here, so signing
+-- in on the website does not sign out the phone.
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  created_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+
 -- Closed-loop, non-transferable, non-cashable credit. There is deliberately no API that moves balance
 -- between users or pays it out. balance_paise can never be negative (CHECK).
 CREATE TABLE IF NOT EXISTS wallets (
@@ -124,6 +133,15 @@ CREATE TABLE IF NOT EXISTS users (
   created_at DOUBLE PRECISION NOT NULL,
   email TEXT,
   password_hash TEXT);
+
+-- Extra sign-ins for an account (one row per device that logged in with email + password). The token a
+-- new account is created with stays in users.token_hash; every later login adds a row here, so signing
+-- in on the website does not sign out the phone.
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  created_at DOUBLE PRECISION NOT NULL);
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 
 -- Closed-loop, non-transferable, non-cashable credit. There is deliberately no API that moves balance
 -- between users or pays it out. balance_paise can never be negative (CHECK).

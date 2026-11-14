@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 
 import pytest
 
@@ -93,14 +94,60 @@ def test_signup_and_login_reject_malformed_bodies(client):
         assert client.post(path, json={"email": 5, "password": PASSWORD}).status_code == 422
 
 
-def test_login_returns_a_working_token_and_signs_out_the_old_one(client):
+def test_login_returns_a_working_token_and_keeps_the_old_one_signed_in(client):
     old = signup(client, "Ravi@Example.com")
     top_up(client, old, 30)
     r = client.post("/v1/auth/login", json={"email": "ravi@example.com", "password": PASSWORD})
     assert r.status_code == 200 and set(r.json()) == {"token"}
     new = {"Authorization": f"Bearer {r.json()['token']}"}
     assert client.get("/v1/wallet", headers=new).json() == {"balance_inr": 30.0}  # same account
-    assert client.get("/v1/wallet", headers=old).status_code == 401  # one token per account
+    assert client.get("/v1/wallet", headers=old).json() == {"balance_inr": 30.0}  # phone stays signed in
+
+
+def test_phone_and_website_share_chats_and_balance(client, fake):
+    phone = signup(client, "both@example.com")
+    top_up(client, phone, 50)
+    web = {"Authorization": "Bearer " + client.post(
+        "/v1/auth/login", json={"email": "both@example.com", "password": PASSWORD}).json()["token"]}
+    r = client.post("/v1/chat", json={"tier": "fast", "message": "hello"}, headers=web)
+    assert r.status_code == 200
+    seen_on_phone = client.get("/v1/history", headers=phone).json()["conversations"]
+    assert [c["conversation_id"] for c in seen_on_phone] == [r.json()["conversation_id"]]
+    assert client.get("/v1/wallet", headers=phone).json() == client.get("/v1/wallet", headers=web).json()
+
+
+def test_logout_ends_only_that_device(client):
+    phone = signup(client, "out@example.com")
+    web = {"Authorization": "Bearer " + client.post(
+        "/v1/auth/login", json={"email": "out@example.com", "password": PASSWORD}).json()["token"]}
+    assert client.post("/v1/auth/logout", headers=web).status_code == 204
+    assert client.get("/v1/wallet", headers=web).status_code == 401
+    assert client.get("/v1/wallet", headers=phone).status_code == 200
+    assert client.post("/v1/auth/logout", headers=phone).status_code == 204  # the original token works too
+    assert client.get("/v1/wallet", headers=phone).status_code == 401
+    assert client.post("/v1/auth/logout").status_code == 401
+
+
+def test_only_the_newest_sign_ins_are_kept(client, monkeypatch):
+    monkeypatch.setattr(accounts, "MAX_SESSIONS", 2)
+    signup(client, "many@example.com")
+    tokens = []
+    for _ in range(3):
+        r = client.post("/v1/auth/login", json={"email": "many@example.com", "password": PASSWORD})
+        tokens.append({"Authorization": f"Bearer {r.json()['token']}"})
+        time.sleep(0.01)
+    codes = [client.get("/v1/wallet", headers=h).status_code for h in tokens]
+    assert codes == [401, 200, 200]
+
+
+def test_delete_account_signs_out_every_device(client):
+    phone = signup(client, "gone@example.com")
+    web = {"Authorization": "Bearer " + client.post(
+        "/v1/auth/login", json={"email": "gone@example.com", "password": PASSWORD}).json()["token"]}
+    assert client.delete("/v1/account", headers=web).status_code == 204
+    assert client.get("/v1/wallet", headers=web).status_code == 401
+    assert client.get("/v1/wallet", headers=phone).status_code == 401
+    assert client.app.state.db.one("SELECT 1 FROM sessions") is None
 
 
 def test_login_failures_are_generic(client):

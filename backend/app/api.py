@@ -11,11 +11,13 @@ import hashlib
 import html
 import logging
 import secrets
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Literal
 
 from fastapi import Body, Depends, FastAPI, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -188,6 +190,15 @@ def create_app(settings: Settings | None = None, *, client=None, provider: Payme
 
     app = FastAPI(title="QUATRIO AI backend (campus-ai)", version="0.2.0", lifespan=lifespan)
     install_handlers(app)
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.cors_origins),
+            allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type", "Accept"],
+            expose_headers=["Retry-After"],
+            max_age=600,
+        )
     app.state.settings, app.state.db, app.state.wallet, app.state.catalog = settings, db, wallet, catalog
 
     def limited(limiter: RateLimiter, key: str) -> None:
@@ -201,7 +212,10 @@ def create_app(settings: Settings | None = None, *, client=None, provider: Payme
         scheme, _, token = auth.partition(" ")
         if scheme.lower() != "bearer" or not token.strip():
             return None
-        row = db.one("SELECT id FROM users WHERE token_hash=?", (hash_token(token.strip()),))
+        digest = hash_token(token.strip())
+        row = db.one("SELECT id FROM users WHERE token_hash=?", (digest,))
+        if row is None:
+            row = db.one("SELECT user_id AS id FROM sessions WHERE token_hash=?", (digest,))
         return row["id"] if row else None
 
     def current_user(request: Request) -> str:
@@ -263,13 +277,32 @@ def create_app(settings: Settings | None = None, *, client=None, provider: Payme
         if not ok or row is None:
             raise APIError(401, "invalid_credentials", "Incorrect email or password.")
         token, token_hash = new_token()
-        if accounts.needs_rehash(row["password_hash"]):
-            db.x("UPDATE users SET token_hash=?, password_hash=? WHERE id=?",
-                 (token_hash, accounts.hash_password(body.password), row["id"]))
-        else:
-            # One token per account (see accounts.py): this signs out any other device.
-            db.x("UPDATE users SET token_hash=? WHERE id=?", (token_hash, row["id"]))
+        # A new sign-in is added next to the existing ones (phone and website both stay signed in).
+        # Only the newest MAX_SESSIONS are kept.
+        rehash = accounts.hash_password(body.password) if accounts.needs_rehash(row["password_hash"]) else None
+        try:
+            with db.tx() as c:
+                c.execute("INSERT INTO sessions(token_hash, user_id, created_at) VALUES(?,?,?)",
+                          (token_hash, row["id"], time.time()))
+                c.execute("DELETE FROM sessions WHERE user_id=? AND token_hash NOT IN "
+                          "(SELECT token_hash FROM sessions WHERE user_id=? ORDER BY created_at DESC LIMIT ?)",
+                          (row["id"], row["id"], accounts.MAX_SESSIONS))
+                if rehash:
+                    c.execute("UPDATE users SET password_hash=? WHERE id=?", (rehash, row["id"]))
+        except integrity_errors():  # the account was deleted while this login was in flight
+            raise APIError(401, "invalid_credentials", "Incorrect email or password.")
         return {"token": token}
+
+    @app.post("/v1/auth/logout", status_code=204, response_class=Response)
+    def logout(request: Request, _user_id: str = Depends(current_user)):
+        """Ends only this device's sign-in; the account's other devices stay signed in."""
+        _, _, token = request.headers.get("authorization", "").partition(" ")
+        digest = hash_token(token.strip())
+        with db.tx() as c:
+            gone = c.execute("DELETE FROM sessions WHERE token_hash=?", (digest,)).rowcount
+            if not gone:  # the token the account was created with: swap in one nobody holds
+                c.execute("UPDATE users SET token_hash=? WHERE token_hash=?", (new_token()[1], digest))
+        return Response(status_code=204)
 
     @app.post("/v1/auth/forgot-password", response_model=MessageOut)
     def forgot_password(body: ForgotPasswordIn, request: Request):

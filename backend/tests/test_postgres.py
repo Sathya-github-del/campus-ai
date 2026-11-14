@@ -46,7 +46,7 @@ from .test_accounts import (  # noqa: F401  (collected as tests in this module)
     test_history_limit_and_auth,
     test_history_lists_only_the_callers_conversations_newest_first,
     test_login_failures_are_generic,
-    test_login_returns_a_working_token_and_signs_out_the_old_one,
+    test_login_returns_a_working_token_and_keeps_the_old_one_signed_in,
     test_signed_up_account_can_top_up_and_chat,
     test_signup_creates_user_with_wallet_and_hashed_password,
     test_signup_validation,
